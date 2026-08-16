@@ -1,6 +1,6 @@
 package com.giri.oms.common.config;
 
-import org.springframework.boot.autoconfigure.thymeleaf.ThymeleafProperties;
+import org.springframework.boot.thymeleaf.autoconfigure.ThymeleafProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.thymeleaf.spring6.templateresolver.SpringResourceTemplateResolver;

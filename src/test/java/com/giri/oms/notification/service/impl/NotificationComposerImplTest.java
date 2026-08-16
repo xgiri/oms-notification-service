@@ -5,8 +5,8 @@ import com.giri.oms.notification.provider.NotificationRequest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.thymeleaf.spring6.SpringTemplateEngine;
-import org.thymeleaf.spring6.templateresolver.SpringResourceTemplateResolver;
 import org.thymeleaf.templatemode.TemplateMode;
+import org.thymeleaf.templateresolver.ClassLoaderTemplateResolver;
 import org.thymeleaf.templateresolver.ITemplateResolver;
 
 import java.util.Map;
@@ -40,8 +40,8 @@ class NotificationComposerImplTest {
     }
 
     private ITemplateResolver templateResolver(String suffix, TemplateMode mode, int order) {
-        SpringResourceTemplateResolver resolver = new SpringResourceTemplateResolver();
-        resolver.setPrefix("classpath:/templates/");
+        ClassLoaderTemplateResolver resolver = new ClassLoaderTemplateResolver();
+        resolver.setPrefix("templates/");
         resolver.setSuffix(suffix);
         resolver.setTemplateMode(mode);
         resolver.setCharacterEncoding("UTF-8");

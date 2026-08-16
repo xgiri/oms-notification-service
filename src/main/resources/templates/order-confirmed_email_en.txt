@@ -2,7 +2,7 @@ Your order is confirmed!
 
 Thanks for your order — we've confirmed it and it's now being prepared.
 
-Order number: [[${orderId}]]
+Order number: [(${orderId})]
 
 We'll email you again once it ships.
 
