@@ -16,6 +16,7 @@ import com.giri.oms.notification.repository.ProcessedEventRepository;
 import com.giri.oms.notification.service.NotificationComposer;
 import com.giri.oms.notification.service.NotificationPreferenceService;
 import com.giri.oms.notification.service.NotificationService;
+import com.giri.oms.security.UnsubscribeTokenService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -23,6 +24,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
 import java.time.LocalDateTime;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -68,6 +70,7 @@ public class NotificationServiceImpl implements NotificationService {
     private final CustomerClient customerClient;
     private final NotificationComposer composer;
     private final List<NotificationProvider> providers;
+    private final UnsubscribeTokenService unsubscribeTokenService;
     private final Clock clock;
 
     @Override
@@ -93,7 +96,8 @@ public class NotificationServiceImpl implements NotificationService {
         CustomerClientResponse customer = customerClient.getCustomer(customerId);
 
         NotificationProvider provider = providerFor(channel);
-        NotificationRequest request = composer.compose(type, "en", customer.email(), templateVariables);
+        NotificationRequest request = composer.compose(type, "en", customer.email(),
+                withUnsubscribeLink(templateVariables, customerId, type, channel));
         ProviderResult result = provider.send(request);
 
         Notification notification = new Notification();
@@ -127,6 +131,25 @@ public class NotificationServiceImpl implements NotificationService {
         }
     }
 
+    /**
+     * Merges in the one template variable this class itself owns (every
+     * other variable in {@code templateVariables} is opaque to this class
+     * — see NotificationComposer's Javadoc). {@code unsubscribeUrl} is
+     * computed here, not left to the caller, because building it needs
+     * exactly the three things this method already has in scope
+     * (customerId, type, channel) and nothing a Kafka consumer or the
+     * resend path should have to know how to assemble themselves — see
+     * UnsubscribeTokenService for what actually goes into the link.
+     * {@code templateVariables} itself is never mutated — callers may pass
+     * an immutable {@code Map.of(...)} (see OrderConfirmedNotificationConsumer).
+     */
+    private Map<String, Object> withUnsubscribeLink(Map<String, Object> templateVariables, Long customerId,
+                                                      NotificationType type, NotificationChannel channel) {
+        Map<String, Object> merged = new HashMap<>(templateVariables);
+        merged.put("unsubscribeUrl", unsubscribeTokenService.buildUnsubscribeLink(customerId, type, channel));
+        return merged;
+    }
+
     private void markProcessed(UUID eventId, NotificationType type) {
         ProcessedEvent processedEvent = new ProcessedEvent();
         processedEvent.setId(UUID.randomUUID());
@@ -149,7 +172,9 @@ public class NotificationServiceImpl implements NotificationService {
 
         NotificationProvider provider = providerFor(notification.getChannel());
         NotificationRequest request = composer.compose(
-                notification.getType(), "en", notification.getRecipientAddress(), templateVariables);
+                notification.getType(), "en", notification.getRecipientAddress(),
+                withUnsubscribeLink(templateVariables, notification.getCustomerId(),
+                        notification.getType(), notification.getChannel()));
         ProviderResult result = provider.send(request);
 
         notification.setRetryCount(notification.getRetryCount() + 1);

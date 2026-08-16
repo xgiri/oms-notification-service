@@ -5,13 +5,12 @@ import com.giri.oms.common.openapi.ApiErrorCodes;
 import com.giri.oms.common.exception.ErrorCode;
 import com.giri.oms.notification.dto.NotificationResponse;
 import com.giri.oms.notification.entity.Notification;
-import com.giri.oms.notification.entity.NotificationChannel;
-import com.giri.oms.notification.entity.NotificationType;
 import com.giri.oms.notification.exception.NotificationNotFoundException;
 import com.giri.oms.notification.mapper.NotificationMapper;
 import com.giri.oms.notification.repository.NotificationRepository;
 import com.giri.oms.notification.service.NotificationPreferenceService;
 import com.giri.oms.notification.service.NotificationService;
+import com.giri.oms.security.UnsubscribeTokenService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
@@ -45,6 +44,7 @@ public class NotificationController {
     private final NotificationMapper notificationMapper;
     private final NotificationService notificationService;
     private final NotificationPreferenceService preferenceService;
+    private final UnsubscribeTokenService unsubscribeTokenService;
 
     @GetMapping
     @Operation(summary = "List a customer's notification delivery history")
@@ -83,21 +83,23 @@ public class NotificationController {
 
     /**
      * Deliberately NOT behind {@code @PreAuthorize}/JWT — see
-     * security.SecurityConfig's permitAll entry for this path and its own
-     * reasoning. A real deployment should replace the raw
-     * customerId/type/channel query params here with a signed, single-use
-     * token embedded in the original email's unsubscribe link — this
-     * placeholder shape lets anyone who knows/guesses a customerId opt
-     * THAT customer out, which is a real gap, not a stylistic one. Flagged
-     * here rather than silently shipped as if it were the finished design.
+     * security.SecurityConfig's permitAll entry for this path (unsubscribing
+     * must work even if the rest of the system, including whatever issues
+     * a login token, is down). What makes this safe despite being
+     * unauthenticated is the {@code token} itself: a signed,
+     * expiring link minted by {@link UnsubscribeTokenService} and embedded
+     * directly in the notification email — nothing here is guessable the
+     * way a raw {@code customerId} query parameter would be. See that
+     * class's own Javadoc for why it's stateless (valid until expiry) rather
+     * than single-use, and why that's a deliberate, acceptable tradeoff
+     * given opt-out's idempotency.
      */
     @GetMapping("/unsubscribe")
-    @Operation(summary = "Opt out of a notification type/channel (unauthenticated, token-based in a real deployment)")
-    public ResponseEntity<Void> unsubscribe(
-            @RequestParam Long customerId,
-            @RequestParam NotificationType type,
-            @RequestParam(defaultValue = "EMAIL") NotificationChannel channel) {
-        preferenceService.optOut(customerId, type, channel);
+    @Operation(summary = "Opt out of a notification type/channel via a signed link token from the notification email")
+    @ApiErrorCodes({ErrorCode.INVALID_UNSUBSCRIBE_TOKEN})
+    public ResponseEntity<Void> unsubscribe(@RequestParam String token) {
+        UnsubscribeTokenService.UnsubscribeTokenClaims claims = unsubscribeTokenService.parseToken(token);
+        preferenceService.optOut(claims.customerId(), claims.type(), claims.channel());
         return ResponseEntity.noContent().build();
     }
 }

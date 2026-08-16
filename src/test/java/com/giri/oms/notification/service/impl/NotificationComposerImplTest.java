@@ -54,13 +54,30 @@ class NotificationComposerImplTest {
     @Test
     void rendersBothHtmlAndTextBodies_withTheGivenVariablesInterpolated() {
         NotificationRequest result = composer.compose(
-                NotificationType.ORDER_CONFIRMED, "en", "jane@example.com", Map.of("orderId", 12345));
+                NotificationType.ORDER_CONFIRMED, "en", "jane@example.com",
+                Map.of("orderId", 12345, "unsubscribeUrl", "https://notify.example.com/api/v1/notifications/unsubscribe?token=abc"));
 
         assertThat(result.recipientAddress()).isEqualTo("jane@example.com");
         assertThat(result.htmlBody()).contains("12345");
         assertThat(result.htmlBody()).contains("Your order is confirmed!");
         assertThat(result.textBody()).contains("12345");
         assertThat(result.textBody()).contains("Your order is confirmed!");
+    }
+
+    @Test
+    void includesTheUnsubscribeLink_inBothHtmlAndTextBodies() {
+        // NotificationServiceImpl (not this class — see its own Javadoc) is
+        // what actually computes a real unsubscribeUrl; this class's only
+        // job is to interpolate whatever it's given, same as any other
+        // template variable. See UnsubscribeTokenService for how the real
+        // URL is built.
+        String unsubscribeUrl = "https://notify.example.com/api/v1/notifications/unsubscribe?token=abc";
+        NotificationRequest result = composer.compose(
+                NotificationType.ORDER_CONFIRMED, "en", "jane@example.com",
+                Map.of("orderId", 12345, "unsubscribeUrl", unsubscribeUrl));
+
+        assertThat(result.htmlBody()).contains(unsubscribeUrl);
+        assertThat(result.textBody()).contains(unsubscribeUrl);
     }
 
     @Test

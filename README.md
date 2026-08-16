@@ -115,18 +115,35 @@ The REST surface exists for support/debugging and preference management:
 | `GET /api/v1/notifications?customerId=` | Delivery history, paged |
 | `GET /api/v1/notifications/{id}` | Single notification's status |
 | `POST /api/v1/notifications/{id}/resend` | Admin-only manual retry — see its own Javadoc for a Phase 1 limitation |
-| `GET /api/v1/notifications/unsubscribe` | Opt out — see below, this one has a real gap |
+| `GET /api/v1/notifications/unsubscribe` | Opt out via a signed link token — see below |
 
-**The unsubscribe endpoint is a placeholder, not a finished design.** It's
-deliberately not JWT-authenticated (unsubscribing has to work even if
-whatever issued the recipient's token is down — same reasoning as any
-"must survive partial outage" design in this system), but it takes raw
-`customerId`/`type`/`channel` query parameters with no signed token. As
-written, anyone who knows or guesses a customer id could opt that customer
-out. A real deployment needs a signed, single-use token embedded in the
-actual unsubscribe link in the email, verified here instead of trusting the
-query params directly. This is called out in the endpoint's own Javadoc,
-not silently shipped as if it were finished.
+**The unsubscribe endpoint is signed-token-based, not a placeholder
+anymore.** It's deliberately not JWT-authenticated (unsubscribing has to
+work even if whatever issued the recipient's token is down — same
+reasoning as any "must survive partial outage" design in this system).
+Instead, it trusts a single `token` query parameter: a self-issued,
+self-verified HMAC-signed (HS256) link token minted by
+`security.UnsubscribeTokenService` and embedded directly in the
+notification email (see `NotificationServiceImpl.withUnsubscribeLink`).
+Nothing here is guessable the way a raw `customerId` query parameter was.
+
+This token is **stateless (valid until it expires), not single-use** — a
+deliberate choice, not a shortcut: opting out is idempotent, so a link
+clicked twice (or forwarded, or crawled by an email client's
+link-prescanning) just opts the same customer out twice, which is
+harmless. A single-use design would need a persisted "used tokens" table
+purely to defend against a scenario that already causes no harm. See
+`UnsubscribeTokenService`'s own Javadoc for the full reasoning, and
+`ErrorCode.INVALID_UNSUBSCRIBE_TOKEN` (`NT101`) for what a caller gets back
+for a missing/malformed/tampered/expired token.
+
+This token type is entirely self-contained to this service — minted and
+verified by the same class, using a secret only this service holds. It's
+deliberately **not** built on oms-main's JWKS/RS256 machinery (see
+`security.SecurityConfig`'s own Javadoc): that exists for tokens a
+logged-in human carries that other services must verify independently;
+this token has exactly one issuer and one verifier, so a shared HMAC
+secret is simpler and sufficient. No cross-repo change was needed.
 
 ## Data model
 
@@ -201,6 +218,16 @@ at `http://localhost:8025` to actually see what this service sent.
 `INTERNAL_SERVICE_API_KEY` is required (no safe default) — see the Security
 section above for what it currently does and doesn't protect.
 
+`UNSUBSCRIBE_TOKEN_SECRET` (Base64 of a raw HMAC-SHA256 key) is required in
+`prod`/undeclared profiles — no safe default there, same reasoning as
+`INTERNAL_SERVICE_API_KEY` above (a shipped default would mean every
+unconfigured deployment silently shares the same signing key). The `dev`
+profile ships a dev-only generated default so local runs need no setup.
+`UNSUBSCRIBE_TOKEN_EXPIRATION_MS` (default 30 days) and
+`NOTIFICATION_SERVICE_PUBLIC_BASE_URL` (default `http://localhost:8085`,
+used to build the clickable link embedded in emails) both have safe
+defaults everywhere.
+
 ## Distributed tracing
 
 OpenTelemetry + Tempo, same OTLP endpoint `oms-main` exports to, so traces
@@ -227,7 +254,13 @@ to the order that triggered it). Not built in Phase 1.
 - `NotificationComposerImplTest` — renders the *real* template files
   through a *real* `SpringTemplateEngine` (not mocked) — this is what
   actually catches a template-resolution regression like the one
-  `ThymeleafConfig` fixes, which a mocked engine couldn't.
+  `ThymeleafConfig` fixes, which a mocked engine couldn't. Also covers the
+  unsubscribe link being interpolated into both the HTML and text bodies.
+- `UnsubscribeTokenServiceTest` — round-trips a real token through the real
+  generate/parse path (no mocked jjwt): a customer/type/channel survives
+  the round trip, a token signed with a different secret is rejected, an
+  expired token is rejected, and a well-signed token that was never minted
+  for the `unsubscribe` purpose is rejected too.
 
 **Not yet built**: a WireMock-based contract test for `CustomerClient`/
 `OrderClient` (same pattern `shipment-service`'s `OrderClientContractTest`/
@@ -235,20 +268,34 @@ to the order that triggered it). Not built in Phase 1.
 real HTTP failures), and any test exercising `InternalServiceAuthInterceptor`
 itself.
 
+**Not yet run**: the unsubscribe-token change (code, tests, `pom.xml`'s new
+jjwt dependency) hasn't been compiled/run in this environment — no Maven
+Central access here. Run `./mvnw test` before trusting it fully.
+
 ## Build phases
 
 This is the staged plan the whole service was scoped from. **Phase 1 is
-what's built.** Phases 2–5 are the roadmap, not implemented.
+fully built. Phase 2 is partially built** — the signed unsubscribe-token
+piece is done; the other Phase 2 item (real per-type opt-out enforcement,
+currently short-circuited for every type since all are `transactional`)
+is still open, pending legal sign-off on which types genuinely can't be
+opted out of. Phases 3–5 are the roadmap, not implemented.
 
 1. **Scaffold + one channel, one event type** *(this build)* — email only,
    `OrderConfirmed` only. Proves the skeleton (Kafka consumer, idempotency,
    one provider, delivery tracking) end to end.
 2. **Preferences + opt-out, before adding more event types.** The data
    model (`notification_preferences`) already exists (see
-   [Data model](#data-model)) but the enforcement is a placeholder (all
-   types transactional, unsubscribe endpoint unauthenticated with no signed
-   token) — this phase is finishing that properly, deliberately *before*
-   more event types ship, not after.
+   [Data model](#data-model)).
+   - **Done:** the unsubscribe endpoint is now signed-token-based — see
+     [API](#api) and `security.UnsubscribeTokenService`. No more raw,
+     guessable query parameters.
+   - **Still open:** enforcement itself is a placeholder — every
+     `NotificationType` is `transactional = true`, so
+     `NotificationPreferenceServiceImpl.isOptedIn` short-circuits to `true`
+     regardless of a stored preference. Get real legal sign-off (CAN-SPAM/
+     GDPR) on which types genuinely can't be opted out of before relying on
+     this in a real deployment — see that class's own Javadoc.
 3. **Remaining event types** (`OrderCancelled`, `PaymentConfirmed`,
    `PaymentFailed`, `ShipmentShipped`, `ShipmentDelivered`,
    `ShipmentReturned`, `CustomerWelcome`) on the email channel. Also the
@@ -262,7 +309,7 @@ what's built.** Phases 2–5 are the roadmap, not implemented.
    Grafana dashboard, same checklist `shipment-service`'s own Stage 7
    established. Not started.
 
-## Known gaps (Phase 1)
+## Known gaps (Phase 1 + partial Phase 2)
 
 Collected in one place for visibility, even though each is also documented
 at its point of origin in code:
@@ -273,11 +320,18 @@ at its point of origin in code:
 - **Internal service auth is a placeholder on both ends** — see
   [Security](#security). Neither this service's own implementation nor the
   receiving services' acceptance of it is production-grade.
-- **Unsubscribe has no signed token** — see [API](#api). A real security
-  gap, not just an unfinished feature.
+- **Every notification type is un-opt-out-able (transactional) as a
+  placeholder stance** — see [Build phases](#build-phases)' Phase 2 note and
+  `NotificationPreferenceServiceImpl.isOptedIn`. Real per-type legal
+  sign-off is still needed; the unsubscribe *token* itself is fixed (see
+  below), but opting out currently has no effect for any type that exists
+  today.
 - **`resend` reconstructs template variables from stored columns only** —
   fine for `ORDER_CONFIRMED`, would under-populate a richer future type. See
   `NotificationService.resend`'s own Javadoc.
 - **No contract/resilience tests for either client yet** — see
   [Testing](#testing).
 - **No infra (Kubernetes/monitoring) at all** — Phase 5, not started.
+
+**Fixed this session:** the unsubscribe endpoint's signed-token gap — see
+[API](#api) and `security.UnsubscribeTokenService`.

@@ -1,5 +1,6 @@
 package com.giri.oms.security;
 
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.Customizer;
@@ -26,6 +27,7 @@ import org.springframework.security.web.SecurityFilterChain;
  */
 @Configuration
 @EnableMethodSecurity
+@EnableConfigurationProperties(UnsubscribeTokenProperties.class)
 public class SecurityConfig {
 
     @Bean

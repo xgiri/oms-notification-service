@@ -61,6 +61,7 @@
 		<org.mapstruct.version>1.6.3</org.mapstruct.version>
 		<testcontainers.version>2.0.5</testcontainers.version>
 		<resilience4j.version>2.3.0</resilience4j.version>
+		<jjwt.version>0.13.0</jjwt.version>
 	</properties>
 
 	<dependencyManagement>
@@ -103,6 +104,36 @@
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
+		</dependency>
+		<!--
+		    NOT for the JWTs this service verifies (those come from oms-main
+		    via spring-boot-starter-oauth2-resource-server above, reading
+		    oms-main's JWKS). This is for the ONE token this service both
+		    mints and verifies itself: the signed unsubscribe-link token
+		    (see security.UnsubscribeTokenService) — self-contained by
+		    design, so it doesn't need oms-main's signing keys or a new
+		    cross-service call. HS256 (a shared secret only this service
+		    holds), not RS256 like oms-main's JwtService — there's no third
+		    party that ever needs to verify this token, so there's no
+		    reason to pay for asymmetric keys. Same jjwt library/version
+		    oms-main itself uses, for consistency.
+		-->
+		<dependency>
+			<groupId>io.jsonwebtoken</groupId>
+			<artifactId>jjwt-api</artifactId>
+			<version>${jjwt.version}</version>
+		</dependency>
+		<dependency>
+			<groupId>io.jsonwebtoken</groupId>
+			<artifactId>jjwt-impl</artifactId>
+			<version>${jjwt.version}</version>
+			<scope>runtime</scope>
+		</dependency>
+		<dependency>
+			<groupId>io.jsonwebtoken</groupId>
+			<artifactId>jjwt-jackson</artifactId>
+			<version>${jjwt.version}</version>
+			<scope>runtime</scope>
 		</dependency>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>

@@ -2,6 +2,7 @@ package com.giri.oms.common.exception;
 
 import com.giri.oms.customerclient.exception.CustomerNotFoundException;
 import com.giri.oms.customerclient.exception.CustomerServiceUnavailableException;
+import com.giri.oms.notification.exception.InvalidUnsubscribeTokenException;
 import com.giri.oms.notification.exception.NotificationNotFoundException;
 import com.giri.oms.orderclient.exception.OrderNotFoundException;
 import com.giri.oms.orderclient.exception.OrderServiceUnavailableException;
@@ -78,6 +79,16 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(OrderServiceUnavailableException.class)
     public ResponseEntity<ErrorResponse> handleOrderServiceUnavailable(OrderServiceUnavailableException ex, HttpServletRequest request) {
         log.error("order service unavailable — path: {}, message: {}", request.getRequestURI(), ex.getMessage());
+        return build(codeOf(ex), ex.getMessage(), request);
+    }
+
+    // Deliberately logged at WARN, not ERROR — an invalid/expired/tampered
+    // unsubscribe token reaching here is an expected, unauthenticated-caller
+    // scenario (an old link, a link someone tampered with), not a system
+    // health signal.
+    @ExceptionHandler(InvalidUnsubscribeTokenException.class)
+    public ResponseEntity<ErrorResponse> handleInvalidUnsubscribeToken(InvalidUnsubscribeTokenException ex, HttpServletRequest request) {
+        log.warn("Invalid unsubscribe token — path: {}", request.getRequestURI());
         return build(codeOf(ex), ex.getMessage(), request);
     }
 

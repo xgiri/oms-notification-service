@@ -51,7 +51,16 @@ public enum ErrorCode {
 
     // ---- Notification (NT) — this service's own domain ----
     NOTIFICATION_NOT_FOUND("E", "NT", "100", HttpStatus.NOT_FOUND,
-            "Notification not found with id: %d");
+            "Notification not found with id: %d"),
+    // Thrown by security.UnsubscribeTokenService for a missing/malformed/
+    // tampered/expired token, or one that verifies but wasn't minted for
+    // this purpose (see that class's PURPOSE_CLAIM check). Deliberately one
+    // generic message for all of those cases — telling an anonymous caller
+    // WHICH way their token is invalid (expired vs. tampered vs. wrong
+    // purpose) has no legitimate use and only helps someone probing the
+    // endpoint.
+    INVALID_UNSUBSCRIBE_TOKEN("E", "NT", "101", HttpStatus.BAD_REQUEST,
+            "This unsubscribe link is invalid or has expired");
 
     private final String prefix;
     private final String componentId;

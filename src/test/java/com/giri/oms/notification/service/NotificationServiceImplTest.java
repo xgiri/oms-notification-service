@@ -12,6 +12,7 @@ import com.giri.oms.notification.provider.ProviderResult;
 import com.giri.oms.notification.repository.NotificationRepository;
 import com.giri.oms.notification.repository.ProcessedEventRepository;
 import com.giri.oms.notification.service.impl.NotificationServiceImpl;
+import com.giri.oms.security.UnsubscribeTokenService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -63,6 +64,9 @@ class NotificationServiceImplTest {
     @Mock
     private NotificationProvider emailProvider;
 
+    @Mock
+    private UnsubscribeTokenService unsubscribeTokenService;
+
     private Clock clock;
     private NotificationServiceImpl notificationService;
 
@@ -75,7 +79,7 @@ class NotificationServiceImplTest {
         clock = Clock.fixed(Instant.parse("2026-08-14T12:00:00Z"), ZoneOffset.UTC);
         notificationService = new NotificationServiceImpl(
                 processedEventRepository, notificationRepository, preferenceService,
-                customerClient, composer, List.of(emailProvider), clock);
+                customerClient, composer, List.of(emailProvider), unsubscribeTokenService, clock);
     }
 
     @Nested
@@ -165,6 +169,34 @@ class NotificationServiceImplTest {
             verify(processedEventRepository).save(any());
             verifyNoInteractions(customerClient, composer, emailProvider);
             verify(notificationRepository, never()).save(any());
+        }
+    }
+
+    @Nested
+    class UnsubscribeLink {
+
+        @Test
+        void isComputedFromCustomerTypeAndChannel_andPassedToTheComposerAsATemplateVariable() {
+            when(processedEventRepository.existsByEventIdAndNotificationType(EVENT_ID, "ORDER_CONFIRMED"))
+                    .thenReturn(false);
+            when(preferenceService.isOptedIn(any(), any(), any())).thenReturn(true);
+            when(customerClient.getCustomer(CUSTOMER_ID))
+                    .thenReturn(new CustomerClientResponse(CUSTOMER_ID, "Jane", "Doe", "jane@example.com", null));
+            when(emailProvider.channel()).thenReturn(NotificationChannel.EMAIL);
+            when(unsubscribeTokenService.buildUnsubscribeLink(CUSTOMER_ID, NotificationType.ORDER_CONFIRMED, NotificationChannel.EMAIL))
+                    .thenReturn("https://notify.example.com/api/v1/notifications/unsubscribe?token=signed-token");
+            when(composer.compose(any(), anyString(), anyString(), any()))
+                    .thenReturn(new NotificationRequest("jane@example.com", "subj", "html", "text"));
+            when(emailProvider.send(any())).thenReturn(ProviderResult.success("msg-1"));
+
+            notificationService.processEvent(EVENT_ID, NotificationType.ORDER_CONFIRMED, CUSTOMER_ID, ORDER_ID, Map.of("orderId", ORDER_ID));
+
+            @SuppressWarnings("unchecked")
+            ArgumentCaptor<Map<String, Object>> variablesCaptor = ArgumentCaptor.forClass(Map.class);
+            verify(composer).compose(any(), anyString(), anyString(), variablesCaptor.capture());
+            assertThat(variablesCaptor.getValue())
+                    .containsEntry("unsubscribeUrl", "https://notify.example.com/api/v1/notifications/unsubscribe?token=signed-token")
+                    .containsEntry("orderId", ORDER_ID);
         }
     }
 

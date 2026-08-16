@@ -8,4 +8,5 @@ We'll email you again once it ships.
 
 ---
 This is a transactional email related to your order. You can manage your
-notification preferences at any time from your account.
+notification preferences at any time from your account, or unsubscribe
+from this notification type: [(${unsubscribeUrl})]
