@@ -1,0 +1,1 @@
+Your order #[(${orderId})] is confirmed and being prepared. We'll text you again once it ships. Opt out: [(${unsubscribeUrl})]

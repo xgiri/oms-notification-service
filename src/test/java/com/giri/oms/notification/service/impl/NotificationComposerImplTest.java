@@ -1,5 +1,6 @@
 package com.giri.oms.notification.service.impl;
 
+import com.giri.oms.notification.entity.NotificationChannel;
 import com.giri.oms.notification.entity.NotificationType;
 import com.giri.oms.notification.provider.NotificationRequest;
 import org.junit.jupiter.api.BeforeEach;
@@ -54,7 +55,7 @@ class NotificationComposerImplTest {
     @Test
     void rendersBothHtmlAndTextBodies_withTheGivenVariablesInterpolated() {
         NotificationRequest result = composer.compose(
-                NotificationType.ORDER_CONFIRMED, "en", "jane@example.com",
+                NotificationType.ORDER_CONFIRMED, NotificationChannel.EMAIL, "en", "jane@example.com",
                 Map.of("orderId", 12345, "unsubscribeUrl", "https://notify.example.com/api/v1/notifications/unsubscribe?token=abc"));
 
         assertThat(result.recipientAddress()).isEqualTo("jane@example.com");
@@ -73,7 +74,7 @@ class NotificationComposerImplTest {
         // URL is built.
         String unsubscribeUrl = "https://notify.example.com/api/v1/notifications/unsubscribe?token=abc";
         NotificationRequest result = composer.compose(
-                NotificationType.ORDER_CONFIRMED, "en", "jane@example.com",
+                NotificationType.ORDER_CONFIRMED, NotificationChannel.EMAIL, "en", "jane@example.com",
                 Map.of("orderId", 12345, "unsubscribeUrl", unsubscribeUrl));
 
         assertThat(result.htmlBody()).contains(unsubscribeUrl);
@@ -83,7 +84,8 @@ class NotificationComposerImplTest {
     @Test
     void setsTheCorrectSubjectLine_perNotificationType() {
         NotificationRequest result = composer.compose(
-                NotificationType.ORDER_CONFIRMED, "en", "jane@example.com", Map.of("orderId", 12345));
+                NotificationType.ORDER_CONFIRMED, NotificationChannel.EMAIL, "en", "jane@example.com",
+                Map.of("orderId", 12345));
 
         assertThat(result.subject()).isEqualTo("Your order #12345 is confirmed");
     }
@@ -95,7 +97,8 @@ class NotificationComposerImplTest {
         // HTML-only default engine or got parsed AS html, which would show
         // up here as stray tags/entities in what should be plain text.
         NotificationRequest result = composer.compose(
-                NotificationType.ORDER_CONFIRMED, "en", "jane@example.com", Map.of("orderId", 12345));
+                NotificationType.ORDER_CONFIRMED, NotificationChannel.EMAIL, "en", "jane@example.com",
+                Map.of("orderId", 12345));
 
         assertThat(result.textBody()).doesNotContain("<", ">");
     }
@@ -104,12 +107,51 @@ class NotificationComposerImplTest {
     void throwsAClearError_whenNoTemplateExistsForTheType() {
         // SHIPMENT_SHIPPED has a subject line (NotificationComposerImpl.subjectFor)
         // but no template file yet — see this service's README on which
-        // types are implemented vs. planned (Phase 3's shipment/customer
-        // event types are blocked on shipment-service/customer-service
-        // event shapes). Composing it should fail loudly at template
-        // resolution, not silently render blank content.
+        // types are implemented vs. planned (shipment/customer event types
+        // are blocked on shipment-service/customer-service event shapes).
+        // Composing it should fail loudly at template resolution, not
+        // silently render blank content.
         assertThatThrownBy(() -> composer.compose(
-                NotificationType.SHIPMENT_SHIPPED, "en", "jane@example.com", Map.of("orderId", 12345)))
+                NotificationType.SHIPMENT_SHIPPED, NotificationChannel.EMAIL, "en", "jane@example.com",
+                Map.of("orderId", 12345)))
+                .isInstanceOf(RuntimeException.class);
+    }
+
+    @Test
+    void sms_rendersTextBodyOnly_withNoHtmlBody() {
+        // The core Phase 4 contract: SMS has no HTML concept, so htmlBody
+        // must come back null rather than an empty string or a rendering
+        // error — see NotificationRequest's own Javadoc on why null (not
+        // "unused") is the deliberate contract here.
+        NotificationRequest result = composer.compose(
+                NotificationType.ORDER_CONFIRMED, NotificationChannel.SMS, "en", "+15551234567",
+                Map.of("orderId", 12345, "unsubscribeUrl", "https://notify.example.com/api/v1/notifications/unsubscribe?token=abc"));
+
+        assertThat(result.recipientAddress()).isEqualTo("+15551234567");
+        assertThat(result.htmlBody()).isNull();
+        assertThat(result.textBody()).contains("12345");
+    }
+
+    @Test
+    void sms_setsTheSameSubjectAsEmail_evenThoughProvidersIgnoreIt() {
+        // subjectFor doesn't branch on channel (see class Javadoc) — this
+        // just pins that down so a future refactor doesn't accidentally
+        // start returning null/blank subjects for SMS.
+        NotificationRequest result = composer.compose(
+                NotificationType.ORDER_CONFIRMED, NotificationChannel.SMS, "en", "+15551234567",
+                Map.of("orderId", 12345));
+
+        assertThat(result.subject()).isEqualTo("Your order #12345 is confirmed");
+    }
+
+    @Test
+    void sms_throwsAClearError_whenNoSmsTemplateExistsForTheType() {
+        // Mirrors throwsAClearError_whenNoTemplateExistsForTheType, but for
+        // a type/channel pair where the .txt SMS template itself is
+        // missing rather than the whole type being unimplemented.
+        assertThatThrownBy(() -> composer.compose(
+                NotificationType.SHIPMENT_SHIPPED, NotificationChannel.SMS, "en", "+15551234567",
+                Map.of("orderId", 12345)))
                 .isInstanceOf(RuntimeException.class);
     }
 }

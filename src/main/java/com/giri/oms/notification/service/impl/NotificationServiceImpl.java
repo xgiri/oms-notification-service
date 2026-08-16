@@ -35,28 +35,44 @@ import java.util.UUID;
  * <ol>
  *   <li><b>Idempotency check first</b>, before anything else, including
  *   before the preference check — a redelivered event that's already been
- *   fully processed (sent, recorded, everything) must be a total no-op,
- *   not re-evaluate preferences that might have changed since (a customer
- *   opting out between the original delivery and a redelivery shouldn't
- *   retroactively un-send something already sent).</li>
- *   <li><b>Preference check second</b>, before the customer lookup — no
- *   reason to pay for a CustomerClient round-trip (and count it toward that
- *   client's circuit breaker) for a notification that's going to be
- *   suppressed anyway.</li>
- *   <li><b>Customer lookup third.</b> CustomerServiceUnavailableException
- *   propagates OUT of this method uncaught (see the class-level
- *   {@code @Transactional} and NotificationConsumer's Javadoc) — this is a
- *   genuine "try again later" case, and letting the Kafka listener's own
- *   error handling (retry, then DLT) own that decision is more correct than
- *   this service inventing its own retry loop for a dependency failure.</li>
- *   <li><b>Compose, then send, then record — in that order, one
- *   transaction.</b> The Notification row (PENDING -> SENT/FAILED) and the
- *   ProcessedEvent row are written in the SAME transaction, so a crash
- *   between "the email was sent" and "the row says SENT" is the one gap
- *   this design doesn't close — see this service's own README on why (the
- *   same at-least-once-delivery tradeoff transactional outbox exists to
- *   avoid on the PRODUCING side; this is the consuming side's mirror-image
- *   version of that same fundamental limit).</li>
+ *   fully processed (every opted-in channel sent, everything recorded)
+ *   must be a total no-op, not re-evaluate preferences that might have
+ *   changed since (a customer opting out between the original delivery and
+ *   a redelivery shouldn't retroactively un-send something already
+ *   sent).</li>
+ *   <li><b>Preference check second, across every registered channel at
+ *   once</b>, before the customer lookup — no reason to pay for a
+ *   CustomerClient round-trip (and count it toward that client's circuit
+ *   breaker) if every registered channel is going to be suppressed anyway.
+ *   "Registered" means "has a {@link NotificationProvider} bean" — see
+ *   {@link #registeredChannels()} — so this stays correct as channels are
+ *   added (SMS in Phase 4) without a code change here.</li>
+ *   <li><b>Customer lookup third, once, shared across every opted-in
+ *   channel.</b> CustomerServiceUnavailableException propagates OUT of
+ *   this method uncaught (see the class-level {@code @Transactional} and
+ *   NotificationConsumer's Javadoc) — this is a genuine "try again later"
+ *   case, and letting the Kafka listener's own error handling (retry, then
+ *   DLT) own that decision is more correct than this service inventing its
+ *   own retry loop for a dependency failure. Failing here means NO channel
+ *   gets attempted, not just email — the whole event redelivers and every
+ *   channel gets a fair second attempt together.</li>
+ *   <li><b>Per opted-in channel: resolve a recipient address, then
+ *   compose, then send, then record — one Notification row per channel.</b>
+ *   A channel with no recipient address on file for this customer (e.g.
+ *   opted into SMS but no phone number recorded) is skipped with a log
+ *   line, not recorded as a FAILED Notification — there was nothing to
+ *   attempt, so "attempted send" (see this service's README §8) doesn't
+ *   apply. Every channel's Notification row lands in the SAME transaction
+ *   as the single ProcessedEvent row written after the whole loop — a
+ *   crash mid-loop (some channels sent, some not yet attempted) is the one
+ *   gap this design doesn't close, same as the single-channel version of
+ *   this tradeoff (see this service's own README on the transactional
+ *   outbox's mirror-image on the consuming side).</li>
+ *   <li><b>ProcessedEvent is written once per event, after every channel
+ *   has been attempted</b> — not once per channel. It's keyed on
+ *   (event_id, notification_type), same granularity as before Phase 4;
+ *   a redelivery must not re-attempt ANY channel, not just the ones that
+ *   already succeeded.</li>
  * </ol>
  */
 @Slf4j
@@ -82,21 +98,80 @@ public class NotificationServiceImpl implements NotificationService {
             return;
         }
 
-        // Phase 1 ships EMAIL only — see NotificationChannel's own Javadoc.
-        // A future multi-channel phase would loop over every opted-in
-        // channel here instead of hardcoding one.
-        NotificationChannel channel = NotificationChannel.EMAIL;
+        List<NotificationChannel> optedInChannels = registeredChannels().stream()
+                .filter(channel -> preferenceService.isOptedIn(customerId, type, channel))
+                .toList();
 
-        if (!preferenceService.isOptedIn(customerId, type, channel)) {
-            log.info("Skipping notification for customer id={} type={} — opted out", customerId, type);
+        if (optedInChannels.isEmpty()) {
+            log.info("Skipping notification for customer id={} type={} — opted out of every registered channel",
+                    customerId, type);
             markProcessed(eventId, type);
             return;
         }
 
         CustomerClientResponse customer = customerClient.getCustomer(customerId);
 
+        for (NotificationChannel channel : optedInChannels) {
+            String recipientAddress = recipientAddressFor(customer, channel);
+            if (recipientAddress == null) {
+                log.warn("Skipping channel={} for customer id={} type={} — no {} on file for this customer",
+                        channel, customerId, type, channel);
+                continue;
+            }
+            sendAndRecord(type, customerId, orderId, channel, recipientAddress, templateVariables);
+        }
+
+        markProcessed(eventId, type);
+    }
+
+    /**
+     * Every channel with a registered {@link NotificationProvider} bean —
+     * derived from {@code providers} rather than a hardcoded list, so
+     * adding a provider (TwilioSmsProvider in Phase 4, a future push
+     * provider) makes {@link #processEvent} consider that channel with no
+     * change here. A channel enum value with no provider bean (PUSH today)
+     * is simply never a candidate — see {@link #recipientAddressFor}'s own
+     * note on why that method can still afford to throw on PUSH.
+     */
+    private List<NotificationChannel> registeredChannels() {
+        return providers.stream().map(NotificationProvider::channel).toList();
+    }
+
+    /**
+     * {@code null} means "this customer has no address on file for this
+     * channel" — a data-availability gap, not a provider failure — see
+     * {@link #processEvent}'s own Javadoc on why that's skipped rather than
+     * recorded as FAILED. The PUSH case intentionally throws rather than
+     * returning null: unlike EMAIL/SMS, there's no field on
+     * {@link CustomerClientResponse} for a push token yet at all, so
+     * reaching this branch would mean a PushProvider got registered before
+     * this method (and the customerclient response shape) was updated for
+     * it — a real gap worth failing loudly on, not silently sending
+     * nowhere.
+     */
+    private String recipientAddressFor(CustomerClientResponse customer, NotificationChannel channel) {
+        return switch (channel) {
+            case EMAIL -> customer.email();
+            case SMS -> customer.phone();
+            case PUSH -> throw new IllegalStateException(
+                    "No recipient-address mapping for channel " + channel + " yet");
+        };
+    }
+
+    /**
+     * Compose, send, and record ONE channel's Notification row — the
+     * per-channel unit {@link #processEvent}'s loop repeats for every
+     * opted-in channel. Split out from {@code processEvent} itself once
+     * that method needed to do this more than once per event (Phase 4) —
+     * see {@link #processEvent}'s own Javadoc for how the two fit
+     * together, including why {@code markProcessed} deliberately stays
+     * in the caller, called once after this runs for every channel, not
+     * once per call here.
+     */
+    private void sendAndRecord(NotificationType type, Long customerId, Long orderId, NotificationChannel channel,
+                                String recipientAddress, Map<String, Object> templateVariables) {
         NotificationProvider provider = providerFor(channel);
-        NotificationRequest request = composer.compose(type, "en", customer.email(),
+        NotificationRequest request = composer.compose(type, channel, "en", recipientAddress,
                 withUnsubscribeLink(templateVariables, customerId, type, channel));
         ProviderResult result = provider.send(request);
 
@@ -104,7 +179,7 @@ public class NotificationServiceImpl implements NotificationService {
         notification.setType(type);
         notification.setChannel(channel);
         notification.setCustomerId(customerId);
-        notification.setRecipientAddress(customer.email());
+        notification.setRecipientAddress(recipientAddress);
         notification.setOrderId(orderId);
         notification.setProviderName(provider.getClass().getSimpleName());
 
@@ -118,16 +193,17 @@ public class NotificationServiceImpl implements NotificationService {
         }
 
         notificationRepository.save(notification);
-        markProcessed(eventId, type);
 
         if (!result.success()) {
             // Deliberately NOT thrown as an exception — a failed SEND is
             // recorded and left for NotificationRetryScheduler, not treated
             // as a reason to fail the whole Kafka message (which would
             // trigger Kafka-level redelivery and risk a duplicate attempt
-            // once the idempotency row above has already been written for
-            // this event — see the class Javadoc's ordering note).
-            log.warn("Notification send failed for customer id={} type={}: {}", customerId, type, result.errorMessage());
+            // on every OTHER channel too, once this event's ProcessedEvent
+            // row is written after the full loop — see processEvent's own
+            // Javadoc's ordering note).
+            log.warn("Notification send failed for customer id={} type={} channel={}: {}",
+                    customerId, type, channel, result.errorMessage());
         }
     }
 
@@ -172,7 +248,7 @@ public class NotificationServiceImpl implements NotificationService {
 
         NotificationProvider provider = providerFor(notification.getChannel());
         NotificationRequest request = composer.compose(
-                notification.getType(), "en", notification.getRecipientAddress(),
+                notification.getType(), notification.getChannel(), "en", notification.getRecipientAddress(),
                 withUnsubscribeLink(templateVariables, notification.getCustomerId(),
                         notification.getType(), notification.getChannel()));
         ProviderResult result = provider.send(request);

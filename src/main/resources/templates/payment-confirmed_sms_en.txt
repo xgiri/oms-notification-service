@@ -1,0 +1,1 @@
+Payment received for order #[(${orderId})]. Thanks for your purchase! Opt out: [(${unsubscribeUrl})]

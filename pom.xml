@@ -61,6 +61,10 @@
 		<org.mapstruct.version>1.6.3</org.mapstruct.version>
 		<testcontainers.version>2.0.5</testcontainers.version>
 		<resilience4j.version>2.3.0</resilience4j.version>
+		<!-- twilio-java's latest stable release as of this addition — check
+		     https://github.com/twilio/twilio-java/releases before bumping,
+		     same as this file's other pinned third-party versions. -->
+		<twilio.version>12.1.1</twilio.version>
 		<jjwt.version>0.13.0</jjwt.version>
 	</properties>
 
@@ -88,6 +92,11 @@
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-webmvc</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>com.twilio.sdk</groupId>
+			<artifactId>twilio</artifactId>
+			<version>${twilio.version}</version>
 		</dependency>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>

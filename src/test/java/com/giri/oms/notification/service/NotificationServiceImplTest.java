@@ -113,7 +113,7 @@ class NotificationServiceImplTest {
             when(customerClient.getCustomer(CUSTOMER_ID))
                     .thenReturn(new CustomerClientResponse(CUSTOMER_ID, "Jane", "Doe", "jane@example.com", null));
             when(emailProvider.channel()).thenReturn(NotificationChannel.EMAIL);
-            when(composer.compose(any(), anyString(), anyString(), any()))
+            when(composer.compose(any(), any(), anyString(), anyString(), any()))
                     .thenReturn(new NotificationRequest("jane@example.com", "subj", "html", "text"));
             when(emailProvider.send(any())).thenReturn(ProviderResult.success("msg-1"));
 
@@ -134,7 +134,7 @@ class NotificationServiceImplTest {
             when(customerClient.getCustomer(CUSTOMER_ID))
                     .thenReturn(new CustomerClientResponse(CUSTOMER_ID, "Jane", "Doe", "jane@example.com", null));
             when(emailProvider.channel()).thenReturn(NotificationChannel.EMAIL);
-            when(composer.compose(any(), anyString(), anyString(), any()))
+            when(composer.compose(any(), any(), anyString(), anyString(), any()))
                     .thenReturn(new NotificationRequest("jane@example.com", "subj", "html", "text"));
             when(emailProvider.send(any())).thenReturn(ProviderResult.success("msg-1"));
 
@@ -156,6 +156,7 @@ class NotificationServiceImplTest {
         void skipsSend_butStillMarksProcessed_whenOptedOut() {
             when(processedEventRepository.existsByEventIdAndNotificationType(EVENT_ID, "ORDER_CONFIRMED"))
                     .thenReturn(false);
+            when(emailProvider.channel()).thenReturn(NotificationChannel.EMAIL);
             when(preferenceService.isOptedIn(CUSTOMER_ID, NotificationType.ORDER_CONFIRMED, NotificationChannel.EMAIL))
                     .thenReturn(false);
 
@@ -167,7 +168,12 @@ class NotificationServiceImplTest {
             // own Javadoc on why idempotency is checked before, not after,
             // the preference check.
             verify(processedEventRepository).save(any());
-            verifyNoInteractions(customerClient, composer, emailProvider);
+            // channel() itself IS called (registeredChannels() needs it to
+            // build the candidate list before the preference check even
+            // runs) — send() is what must never happen for an opted-out
+            // channel, so that's what this asserts, not zero interactions.
+            verify(emailProvider, never()).send(any());
+            verifyNoInteractions(customerClient, composer);
             verify(notificationRepository, never()).save(any());
         }
     }
@@ -185,7 +191,7 @@ class NotificationServiceImplTest {
             when(emailProvider.channel()).thenReturn(NotificationChannel.EMAIL);
             when(unsubscribeTokenService.buildUnsubscribeLink(CUSTOMER_ID, NotificationType.ORDER_CONFIRMED, NotificationChannel.EMAIL))
                     .thenReturn("https://notify.example.com/api/v1/notifications/unsubscribe?token=signed-token");
-            when(composer.compose(any(), anyString(), anyString(), any()))
+            when(composer.compose(any(), any(), anyString(), anyString(), any()))
                     .thenReturn(new NotificationRequest("jane@example.com", "subj", "html", "text"));
             when(emailProvider.send(any())).thenReturn(ProviderResult.success("msg-1"));
 
@@ -193,7 +199,7 @@ class NotificationServiceImplTest {
 
             @SuppressWarnings("unchecked")
             ArgumentCaptor<Map<String, Object>> variablesCaptor = ArgumentCaptor.forClass(Map.class);
-            verify(composer).compose(any(), anyString(), anyString(), variablesCaptor.capture());
+            verify(composer).compose(any(), any(), anyString(), anyString(), variablesCaptor.capture());
             assertThat(variablesCaptor.getValue())
                     .containsEntry("unsubscribeUrl", "https://notify.example.com/api/v1/notifications/unsubscribe?token=signed-token")
                     .containsEntry("orderId", ORDER_ID);
@@ -211,7 +217,7 @@ class NotificationServiceImplTest {
             when(customerClient.getCustomer(CUSTOMER_ID))
                     .thenReturn(new CustomerClientResponse(CUSTOMER_ID, "Jane", "Doe", "jane@example.com", null));
             when(emailProvider.channel()).thenReturn(NotificationChannel.EMAIL);
-            when(composer.compose(any(), anyString(), anyString(), any()))
+            when(composer.compose(any(), any(), anyString(), anyString(), any()))
                     .thenReturn(new NotificationRequest("jane@example.com", "subj", "html", "text"));
             when(emailProvider.send(any())).thenReturn(ProviderResult.failure("SMTP connection refused"));
 
@@ -229,6 +235,108 @@ class NotificationServiceImplTest {
             // Still marked processed, same reasoning as the opted-out case —
             // a redelivery must not re-send.
             verify(processedEventRepository).save(any());
+        }
+    }
+
+    /**
+     * Phase 4's core new behavior: more than one registered provider, so
+     * {@code processEvent} has to fan out per-channel instead of hardcoding
+     * EMAIL — see NotificationServiceImpl's own class Javadoc for the full
+     * ordering this exercises. A dedicated {@code smsProvider} mock/service
+     * instance is built per-test here (not in the shared {@code setUp()})
+     * since most of this class's other tests deliberately stay
+     * single-channel to keep their assertions focused.
+     */
+    @Nested
+    class MultiChannelFanOut {
+
+        @Mock
+        private NotificationProvider smsProvider;
+
+        private NotificationServiceImpl multiChannelService;
+
+        @BeforeEach
+        void setUpMultiChannel() {
+            multiChannelService = new NotificationServiceImpl(
+                    processedEventRepository, notificationRepository, preferenceService,
+                    customerClient, composer, List.of(emailProvider, smsProvider), unsubscribeTokenService, clock);
+        }
+
+        @Test
+        void sendsToEveryOptedInChannel_whenCustomerHasBothEmailAndPhone() {
+            when(processedEventRepository.existsByEventIdAndNotificationType(EVENT_ID, "ORDER_CONFIRMED"))
+                    .thenReturn(false);
+            when(emailProvider.channel()).thenReturn(NotificationChannel.EMAIL);
+            when(smsProvider.channel()).thenReturn(NotificationChannel.SMS);
+            when(preferenceService.isOptedIn(CUSTOMER_ID, NotificationType.ORDER_CONFIRMED, NotificationChannel.EMAIL))
+                    .thenReturn(true);
+            when(preferenceService.isOptedIn(CUSTOMER_ID, NotificationType.ORDER_CONFIRMED, NotificationChannel.SMS))
+                    .thenReturn(true);
+            when(customerClient.getCustomer(CUSTOMER_ID))
+                    .thenReturn(new CustomerClientResponse(CUSTOMER_ID, "Jane", "Doe", "jane@example.com", "+15551234567"));
+            when(composer.compose(any(), any(), anyString(), anyString(), any()))
+                    .thenReturn(new NotificationRequest("recipient", "subj", "html", "text"));
+            when(emailProvider.send(any())).thenReturn(ProviderResult.success("email-msg-1"));
+            when(smsProvider.send(any())).thenReturn(ProviderResult.success("sms-msg-1"));
+
+            multiChannelService.processEvent(EVENT_ID, NotificationType.ORDER_CONFIRMED, CUSTOMER_ID, ORDER_ID, Map.of());
+
+            // One Notification row per channel — not one shared row.
+            verify(notificationRepository, org.mockito.Mockito.times(2)).save(any());
+            verify(emailProvider).send(any());
+            verify(smsProvider).send(any());
+            // Still exactly ONE ProcessedEvent row for the whole event,
+            // regardless of how many channels it fanned out to.
+            verify(processedEventRepository, org.mockito.Mockito.times(1)).save(any());
+        }
+
+        @Test
+        void sendsOnlyToTheOptedInChannel_whenCustomerOptedOutOfTheOther() {
+            when(processedEventRepository.existsByEventIdAndNotificationType(EVENT_ID, "ORDER_CONFIRMED"))
+                    .thenReturn(false);
+            when(emailProvider.channel()).thenReturn(NotificationChannel.EMAIL);
+            when(smsProvider.channel()).thenReturn(NotificationChannel.SMS);
+            when(preferenceService.isOptedIn(CUSTOMER_ID, NotificationType.ORDER_CONFIRMED, NotificationChannel.EMAIL))
+                    .thenReturn(true);
+            when(preferenceService.isOptedIn(CUSTOMER_ID, NotificationType.ORDER_CONFIRMED, NotificationChannel.SMS))
+                    .thenReturn(false);
+            when(customerClient.getCustomer(CUSTOMER_ID))
+                    .thenReturn(new CustomerClientResponse(CUSTOMER_ID, "Jane", "Doe", "jane@example.com", "+15551234567"));
+            when(composer.compose(any(), any(), anyString(), anyString(), any()))
+                    .thenReturn(new NotificationRequest("jane@example.com", "subj", "html", "text"));
+            when(emailProvider.send(any())).thenReturn(ProviderResult.success("email-msg-1"));
+
+            multiChannelService.processEvent(EVENT_ID, NotificationType.ORDER_CONFIRMED, CUSTOMER_ID, ORDER_ID, Map.of());
+
+            verify(emailProvider).send(any());
+            verify(smsProvider, never()).send(any());
+            verify(notificationRepository, org.mockito.Mockito.times(1)).save(any());
+        }
+
+        @Test
+        void skipsSmsWithoutRecordingAFailure_whenCustomerHasNoPhoneOnFile() {
+            // A data-availability gap, not a provider failure — see
+            // NotificationServiceImpl#recipientAddressFor's own Javadoc on
+            // why this is a skip (a log line only), never a FAILED
+            // Notification row: there was nothing to attempt.
+            when(processedEventRepository.existsByEventIdAndNotificationType(EVENT_ID, "ORDER_CONFIRMED"))
+                    .thenReturn(false);
+            when(emailProvider.channel()).thenReturn(NotificationChannel.EMAIL);
+            when(smsProvider.channel()).thenReturn(NotificationChannel.SMS);
+            when(preferenceService.isOptedIn(any(), any(), any())).thenReturn(true);
+            when(customerClient.getCustomer(CUSTOMER_ID))
+                    .thenReturn(new CustomerClientResponse(CUSTOMER_ID, "Jane", "Doe", "jane@example.com", null));
+            when(composer.compose(any(), any(), anyString(), anyString(), any()))
+                    .thenReturn(new NotificationRequest("jane@example.com", "subj", "html", "text"));
+            when(emailProvider.send(any())).thenReturn(ProviderResult.success("email-msg-1"));
+
+            multiChannelService.processEvent(EVENT_ID, NotificationType.ORDER_CONFIRMED, CUSTOMER_ID, ORDER_ID, Map.of());
+
+            verify(emailProvider).send(any());
+            verify(smsProvider, never()).send(any());
+            // Only the EMAIL Notification row — the skipped SMS channel
+            // never produces one.
+            verify(notificationRepository, org.mockito.Mockito.times(1)).save(any());
         }
     }
 }
