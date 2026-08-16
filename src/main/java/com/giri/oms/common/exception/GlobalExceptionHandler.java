@@ -68,7 +68,7 @@ public class GlobalExceptionHandler {
 
     // Thrown by OrderClient when oms-main's order endpoint returns 404 for
     // the order id an OrderConfirmed event references (see
-    // OrderConfirmedNotificationConsumer) — a legitimate business rejection,
+    // OrderNotificationConsumer/PaymentNotificationConsumer) — a legitimate business rejection,
     // not a service-health problem.
     @ExceptionHandler(OrderNotFoundException.class)
     public ResponseEntity<ErrorResponse> handleOrderNotFound(OrderNotFoundException ex, HttpServletRequest request) {

@@ -17,6 +17,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.math.BigDecimal;
 import java.util.Map;
 import java.util.UUID;
 
@@ -30,16 +31,14 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
- * A REAL JsonMapper here, not a mock — same convention as
- * shipment-service's own consumer tests: constructing one is trivial and a
- * mocked deserializer would be pointless (it wouldn't actually exercise the
- * tolerant-deserialization behavior these tests care about). NotificationService
- * and OrderClient stay mocked — this class's own job is the dispatch/wiring
- * logic (ignore unknown event types, resolve customerId, pass the right
- * args through), not either dependency's own behavior.
+ * Same testing conventions as OrderNotificationConsumerTest — a
+ * real JsonMapper, mocked NotificationService/OrderClient, this class's own
+ * job under test is the dispatch/wiring logic for BOTH event types it
+ * handles on its one {@code @KafkaListener} method (see this class's own
+ * Javadoc on why both live in one method).
  */
 @ExtendWith(MockitoExtension.class)
-class OrderConfirmedNotificationConsumerTest {
+class PaymentNotificationConsumerTest {
 
     @Mock
     private NotificationService notificationService;
@@ -47,69 +46,75 @@ class OrderConfirmedNotificationConsumerTest {
     @Mock
     private OrderClient orderClient;
 
-    private OrderConfirmedNotificationConsumer consumer;
+    private PaymentNotificationConsumer consumer;
 
     private static final Long ORDER_ID = 100L;
     private static final Long CUSTOMER_ID = 7L;
 
     @BeforeEach
     void setUp() {
-        consumer = new OrderConfirmedNotificationConsumer(notificationService, orderClient, JsonMapper.builder().build());
+        consumer = new PaymentNotificationConsumer(notificationService, orderClient, JsonMapper.builder().build());
     }
 
     @Test
-    void onOrderConfirmed_resolvesCustomerIdViaOrderClient_andProcessesTheNotification() {
+    void onPaymentConfirmed_resolvesCustomerIdViaOrderClient_andProcessesTheNotification() {
         UUID eventId = UUID.randomUUID();
         when(orderClient.getOrder(ORDER_ID)).thenReturn(new OrderClientResponse(ORDER_ID, CUSTOMER_ID));
 
-        consumer.onMessage(record(orderConfirmedJson(eventId, ORDER_ID)), EventType.ORDER_CONFIRMED);
+        consumer.onMessage(record(paymentConfirmedJson(eventId, ORDER_ID, "49.99")), EventType.PAYMENT_CONFIRMED);
 
         verify(orderClient).getOrder(ORDER_ID);
 
         ArgumentCaptor<Map<String, Object>> templateVarsCaptor = ArgumentCaptor.forClass(Map.class);
         verify(notificationService).processEvent(
-                eq(eventId), eq(NotificationType.ORDER_CONFIRMED), eq(CUSTOMER_ID), eq(ORDER_ID), templateVarsCaptor.capture());
+                eq(eventId), eq(NotificationType.PAYMENT_CONFIRMED), eq(CUSTOMER_ID), eq(ORDER_ID), templateVarsCaptor.capture());
+
+        assertThat(templateVarsCaptor.getValue())
+                .containsEntry("orderId", ORDER_ID)
+                .containsEntry("amount", new BigDecimal("49.99"));
+    }
+
+    @Test
+    void onPaymentFailed_resolvesCustomerIdViaOrderClient_andProcessesTheNotification() {
+        UUID eventId = UUID.randomUUID();
+        when(orderClient.getOrder(ORDER_ID)).thenReturn(new OrderClientResponse(ORDER_ID, CUSTOMER_ID));
+
+        consumer.onMessage(record(paymentFailedJson(eventId, ORDER_ID)), EventType.PAYMENT_FAILED);
+
+        verify(orderClient).getOrder(ORDER_ID);
+
+        ArgumentCaptor<Map<String, Object>> templateVarsCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(notificationService).processEvent(
+                eq(eventId), eq(NotificationType.PAYMENT_FAILED), eq(CUSTOMER_ID), eq(ORDER_ID), templateVarsCaptor.capture());
 
         assertThat(templateVarsCaptor.getValue()).containsEntry("orderId", ORDER_ID);
     }
 
     @Test
     void ignoresEventsOfOtherTypes_onTheSameTopic() {
-        consumer.onMessage(record("{}"), EventType.ORDER_CANCELLED);
+        consumer.onMessage(record("{}"), EventType.ORDER_CONFIRMED);
 
         verifyNoInteractions(orderClient, notificationService);
     }
 
     @Test
     void toleratesUnknownFieldsOnTheEventPayload() {
-        // See OrderConfirmedEvent's own Javadoc / this class's readEvent —
-        // an oms-main producer that's rolled forward with a new additive
-        // field (e.g. the recommended customerId fix, before this
-        // consumer's own OrderConfirmedEvent record is updated to model it)
-        // must not break this consumer.
         UUID eventId = UUID.randomUUID();
         String jsonWithExtraField = """
-                {"eventId": "%s", "orderId": %d, "occurredAt": "2026-08-14T12:00:00", "customerId": 999}
+                {"eventId": "%s", "orderId": %d, "amount": 49.99, "occurredAt": "2026-08-14T12:00:00", "transactionReference": "txn_abc"}
                 """.formatted(eventId, ORDER_ID);
         when(orderClient.getOrder(ORDER_ID)).thenReturn(new OrderClientResponse(ORDER_ID, CUSTOMER_ID));
 
-        consumer.onMessage(record(jsonWithExtraField), EventType.ORDER_CONFIRMED);
+        consumer.onMessage(record(jsonWithExtraField), EventType.PAYMENT_CONFIRMED);
 
         verify(notificationService).processEvent(eq(eventId), any(), eq(CUSTOMER_ID), eq(ORDER_ID), any());
     }
 
     @Test
     void propagatesOrderNotFoundException_uncaught() {
-        // Deliberately uncaught — see this class's own Javadoc on why a
-        // dependency failure's retry/DLT decision belongs to Spring Kafka's
-        // error handling (KafkaConfig.kafkaErrorHandler), not this class.
-        // OrderNotFoundException specifically shouldn't really happen in
-        // practice (OrderConfirmed implies the order exists) but this
-        // confirms the propagation behavior regardless of which exception
-        // OrderClient throws.
         when(orderClient.getOrder(ORDER_ID)).thenThrow(new OrderNotFoundException(ORDER_ID));
 
-        assertThatThrownBy(() -> consumer.onMessage(record(orderConfirmedJson(UUID.randomUUID(), ORDER_ID)), EventType.ORDER_CONFIRMED))
+        assertThatThrownBy(() -> consumer.onMessage(record(paymentConfirmedJson(UUID.randomUUID(), ORDER_ID, "49.99")), EventType.PAYMENT_CONFIRMED))
                 .isInstanceOf(OrderNotFoundException.class);
 
         verify(notificationService, never()).processEvent(any(), any(), any(), any(), any());
@@ -120,13 +125,19 @@ class OrderConfirmedNotificationConsumerTest {
         when(orderClient.getOrder(ORDER_ID))
                 .thenThrow(new OrderServiceUnavailableException(ORDER_ID, new RuntimeException("timeout")));
 
-        assertThatThrownBy(() -> consumer.onMessage(record(orderConfirmedJson(UUID.randomUUID(), ORDER_ID)), EventType.ORDER_CONFIRMED))
+        assertThatThrownBy(() -> consumer.onMessage(record(paymentFailedJson(UUID.randomUUID(), ORDER_ID)), EventType.PAYMENT_FAILED))
                 .isInstanceOf(OrderServiceUnavailableException.class);
 
         verify(notificationService, never()).processEvent(any(), any(), any(), any(), any());
     }
 
-    private String orderConfirmedJson(UUID eventId, Long orderId) {
+    private String paymentConfirmedJson(UUID eventId, Long orderId, String amount) {
+        return """
+                {"eventId": "%s", "orderId": %d, "amount": %s, "occurredAt": "2026-08-14T12:00:00"}
+                """.formatted(eventId, orderId, amount);
+    }
+
+    private String paymentFailedJson(UUID eventId, Long orderId) {
         return """
                 {"eventId": "%s", "orderId": %d, "occurredAt": "2026-08-14T12:00:00"}
                 """.formatted(eventId, orderId);
@@ -134,7 +145,7 @@ class OrderConfirmedNotificationConsumerTest {
 
     private ConsumerRecord<String, String> record(String value) {
         ConsumerRecord<String, String> record = new ConsumerRecord<>("oms.order.events", 0, 0L, "key", value);
-        record.headers().add(new RecordHeader("eventType", EventType.ORDER_CONFIRMED.getBytes()));
+        record.headers().add(new RecordHeader("eventType", EventType.PAYMENT_CONFIRMED.getBytes()));
         return record;
     }
 }

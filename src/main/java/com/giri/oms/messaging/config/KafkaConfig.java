@@ -41,12 +41,15 @@ public class KafkaConfig {
     }
 
     /**
-     * Applies to the one @KafkaListener in this app
-     * (OrderConfirmedNotificationConsumer) — mirrors oms-main's/
-     * shipment-service's own kafkaErrorHandler bean exactly. Retries a
-     * failure 3 times, 2 seconds apart, to ride out a brief CustomerClient/
-     * OrderClient blip without holding up the partition for too long; if
-     * still failing after that, republishes the raw record to
+     * Applies to every @KafkaListener in this app (OrderNotificationConsumer,
+     * PaymentNotificationConsumer as of Phase 3) — Spring Boot's Kafka
+     * autoconfiguration wires any single CommonErrorHandler bean into the
+     * default listener container factory automatically, so both listeners
+     * share this one bean without either needing its own — mirrors
+     * oms-main's/shipment-service's own kafkaErrorHandler bean exactly.
+     * Retries a failure 3 times, 2 seconds apart, to ride out a brief
+     * CustomerClient/OrderClient blip without holding up the partition for
+     * too long; if still failing after that, republishes the raw record to
      * "oms.order.events.DLT" instead of blocking the partition forever or
      * silently dropping the message.
      */

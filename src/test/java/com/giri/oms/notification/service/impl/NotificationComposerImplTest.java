@@ -102,12 +102,14 @@ class NotificationComposerImplTest {
 
     @Test
     void throwsAClearError_whenNoTemplateExistsForTheType() {
-        // ORDER_CANCELLED has a subject line (NotificationComposerImpl.subjectFor)
+        // SHIPMENT_SHIPPED has a subject line (NotificationComposerImpl.subjectFor)
         // but no template file yet — see this service's README on which
-        // types are Phase 1 vs. planned. Composing it should fail loudly at
-        // template resolution, not silently render blank content.
+        // types are implemented vs. planned (Phase 3's shipment/customer
+        // event types are blocked on shipment-service/customer-service
+        // event shapes). Composing it should fail loudly at template
+        // resolution, not silently render blank content.
         assertThatThrownBy(() -> composer.compose(
-                NotificationType.ORDER_CANCELLED, "en", "jane@example.com", Map.of("orderId", 12345)))
+                NotificationType.SHIPMENT_SHIPPED, "en", "jane@example.com", Map.of("orderId", 12345)))
                 .isInstanceOf(RuntimeException.class);
     }
 }

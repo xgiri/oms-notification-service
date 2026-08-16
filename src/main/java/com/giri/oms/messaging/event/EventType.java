@@ -2,10 +2,13 @@ package com.giri.oms.messaging.event;
 
 /**
  * Trimmed to the event types this service actually consumes — same
- * reasoning as shipment-service's own EventType. Phase 1 only wires
- * ORDER_CONFIRMED (see OrderConfirmedNotificationConsumer); the rest are
- * listed now so adding a Phase-3 consumer is a new @KafkaListener method,
- * not a rediscovery of which string values oms-main actually publishes.
+ * reasoning as shipment-service's own EventType. Phase 1 wired
+ * ORDER_CONFIRMED; Phase 3 has since added ORDER_CANCELLED (see
+ * OrderNotificationConsumer) and PAYMENT_CONFIRMED/PAYMENT_FAILED (see
+ * PaymentNotificationConsumer). The remaining constants are listed now so
+ * wiring up the SHIPMENT_ constants or CUSTOMER_CREATED later is a new
+ * @KafkaListener method, not a rediscovery of which string values oms-main
+ * actually publishes.
  */
 public final class EventType {
 

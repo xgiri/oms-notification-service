@@ -13,7 +13,8 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * <p>
  * Phase 1 scope (see this service's README for the full staged plan):
  * one channel (email, via SmtpEmailProvider), one event type
- * (OrderConfirmed, via OrderConfirmedNotificationConsumer), idempotent
+ * (OrderConfirmed/OrderCancelled via OrderNotificationConsumer, PaymentConfirmed/
+ * PaymentFailed via PaymentNotificationConsumer), idempotent
  * processing, and the opt-out data model in place even though its
  * enforcement API isn't fully built out yet.
  */

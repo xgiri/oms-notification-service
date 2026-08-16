@@ -1,0 +1,14 @@
+We couldn't process your payment
+
+Unfortunately we weren't able to process payment for the order below, so
+it has been cancelled.
+
+Order number: [(${orderId})]
+
+No further action is needed on this order. If you'd still like these
+items, please place a new order.
+
+---
+This is a transactional email related to your order. You can manage your
+notification preferences at any time from your account, or unsubscribe
+from this notification type: [(${unsubscribeUrl})]

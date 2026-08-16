@@ -141,7 +141,7 @@ public class NotificationServiceImpl implements NotificationService {
      * resend path should have to know how to assemble themselves — see
      * UnsubscribeTokenService for what actually goes into the link.
      * {@code templateVariables} itself is never mutated — callers may pass
-     * an immutable {@code Map.of(...)} (see OrderConfirmedNotificationConsumer).
+     * an immutable {@code Map.of(...)} (see OrderNotificationConsumer).
      */
     private Map<String, Object> withUnsubscribeLink(Map<String, Object> templateVariables, Long customerId,
                                                       NotificationType type, NotificationChannel channel) {

@@ -1,0 +1,13 @@
+Your order has been cancelled
+
+Your order below has been cancelled and will not be processed further.
+
+Order number: [(${orderId})]
+
+If you believe this is a mistake, or you'd still like these items, please
+place a new order or contact support.
+
+---
+This is a transactional email related to your order. You can manage your
+notification preferences at any time from your account, or unsubscribe
+from this notification type: [(${unsubscribeUrl})]

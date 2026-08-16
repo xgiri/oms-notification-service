@@ -1,0 +1,13 @@
+We've received your payment
+
+Thanks — your payment for the order below has been confirmed.
+
+Order number: [(${orderId})]
+Amount charged: [(${amount})]
+
+We'll email you again once your order ships.
+
+---
+This is a transactional email related to your order. You can manage your
+notification preferences at any time from your account, or unsubscribe
+from this notification type: [(${unsubscribeUrl})]
