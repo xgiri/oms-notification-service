@@ -1,0 +1,70 @@
+# Fold these blocks into oms-main's own docker-compose.yml — same pattern
+# shipment-service's own snippet documents. Ports: app 8085, management
+# 8095, Postgres 5436 — chosen to not collide with product-service
+# (8082/8091/5433), customer-service (8083/8092/5434), or shipment-service
+# (8084/8094/5435).
+
+  notification-db:
+    image: postgres:16-alpine
+    container_name: oms-notification-db
+    environment:
+      POSTGRES_DB: notification_service
+      POSTGRES_USER: ${DB_USERNAME:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+    ports:
+      - "5436:5432"
+    volumes:
+      - oms-notification-postgres-data:/var/lib/postgresql/data
+    networks:
+      - oms-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Mailpit — a local SMTP catcher, not a real provider. See
+  # SmtpEmailProvider's Javadoc: local dev needs no cloud credentials.
+  # Web UI at http://localhost:8025 to actually see what this service sent.
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: oms-mailpit
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+    networks:
+      - oms-network
+
+  notification-service:
+    build:
+      context: ../notification-service
+    container_name: oms-notification-service
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      DB_HOST: notification-db
+      DB_PORT: "5432"
+      DB_USERNAME: ${DB_USERNAME:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      ORDER_SERVICE_BASE_URL: http://app:8080/api/v1
+      AUTH_SERVICE_JWKS_URI: http://app:8080/.well-known/jwks.json
+      CUSTOMER_SERVICE_URL: http://customer-service:8083/api/v1
+      INTERNAL_SERVICE_API_KEY: ${INTERNAL_SERVICE_API_KEY:?INTERNAL_SERVICE_API_KEY is required}
+      OTLP_TRACING_ENDPOINT: http://tempo:4318/v1/traces
+    ports:
+      - "8085:8080"
+      - "8095:8081"
+    depends_on:
+      notification-db:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+      mailpit:
+        condition: service_started
+    networks:
+      - oms-network
+
+volumes:
+  oms-notification-postgres-data:

@@ -1,0 +1,11 @@
+Your order is confirmed!
+
+Thanks for your order — we've confirmed it and it's now being prepared.
+
+Order number: [[${orderId}]]
+
+We'll email you again once it ships.
+
+---
+This is a transactional email related to your order. You can manage your
+notification preferences at any time from your account.

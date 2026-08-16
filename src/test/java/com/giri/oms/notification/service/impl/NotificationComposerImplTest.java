@@ -1,0 +1,96 @@
+package com.giri.oms.notification.service.impl;
+
+import com.giri.oms.notification.entity.NotificationType;
+import com.giri.oms.notification.provider.NotificationRequest;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.thymeleaf.spring6.SpringTemplateEngine;
+import org.thymeleaf.spring6.templateresolver.SpringResourceTemplateResolver;
+import org.thymeleaf.templatemode.TemplateMode;
+import org.thymeleaf.templateresolver.ITemplateResolver;
+
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/**
+ * Builds a real {@link SpringTemplateEngine} with both an HTML and a TEXT
+ * resolver — mirroring exactly what Spring Boot's autoconfiguration plus
+ * {@code common.config.ThymeleafConfig} wire up together in the real app —
+ * rather than mocking the engine. A mocked engine would only prove this
+ * class calls {@code process(...)} with some arguments; it couldn't catch
+ * the actual bug ThymeleafConfig exists to fix (the {@code .txt} template
+ * failing to resolve under HTML mode) the way rendering the real template
+ * files under src/main/resources/templates does.
+ */
+class NotificationComposerImplTest {
+
+    private NotificationComposerImpl composer;
+
+    @BeforeEach
+    void setUp() {
+        ITemplateResolver htmlResolver = templateResolver(".html", TemplateMode.HTML, 1);
+        ITemplateResolver textResolver = templateResolver(".txt", TemplateMode.TEXT, 2);
+
+        SpringTemplateEngine templateEngine = new SpringTemplateEngine();
+        templateEngine.setTemplateResolvers(java.util.Set.of(htmlResolver, textResolver));
+
+        composer = new NotificationComposerImpl(templateEngine);
+    }
+
+    private ITemplateResolver templateResolver(String suffix, TemplateMode mode, int order) {
+        SpringResourceTemplateResolver resolver = new SpringResourceTemplateResolver();
+        resolver.setPrefix("classpath:/templates/");
+        resolver.setSuffix(suffix);
+        resolver.setTemplateMode(mode);
+        resolver.setCharacterEncoding("UTF-8");
+        resolver.setCacheable(false);
+        resolver.setOrder(order);
+        resolver.setCheckExistence(true);
+        return resolver;
+    }
+
+    @Test
+    void rendersBothHtmlAndTextBodies_withTheGivenVariablesInterpolated() {
+        NotificationRequest result = composer.compose(
+                NotificationType.ORDER_CONFIRMED, "en", "jane@example.com", Map.of("orderId", 12345));
+
+        assertThat(result.recipientAddress()).isEqualTo("jane@example.com");
+        assertThat(result.htmlBody()).contains("12345");
+        assertThat(result.htmlBody()).contains("Your order is confirmed!");
+        assertThat(result.textBody()).contains("12345");
+        assertThat(result.textBody()).contains("Your order is confirmed!");
+    }
+
+    @Test
+    void setsTheCorrectSubjectLine_perNotificationType() {
+        NotificationRequest result = composer.compose(
+                NotificationType.ORDER_CONFIRMED, "en", "jane@example.com", Map.of("orderId", 12345));
+
+        assertThat(result.subject()).isEqualTo("Your order #12345 is confirmed");
+    }
+
+    @Test
+    void theTextBodyIsPlainText_notHtmlEscapedOrTagLaden() {
+        // The concrete regression ThymeleafConfig fixes — before that fix
+        // existed, the .txt template either failed to resolve under the
+        // HTML-only default engine or got parsed AS html, which would show
+        // up here as stray tags/entities in what should be plain text.
+        NotificationRequest result = composer.compose(
+                NotificationType.ORDER_CONFIRMED, "en", "jane@example.com", Map.of("orderId", 12345));
+
+        assertThat(result.textBody()).doesNotContain("<", ">");
+    }
+
+    @Test
+    void throwsAClearError_whenNoTemplateExistsForTheType() {
+        // ORDER_CANCELLED has a subject line (NotificationComposerImpl.subjectFor)
+        // but no template file yet — see this service's README on which
+        // types are Phase 1 vs. planned. Composing it should fail loudly at
+        // template resolution, not silently render blank content.
+        assertThatThrownBy(() -> composer.compose(
+                NotificationType.ORDER_CANCELLED, "en", "jane@example.com", Map.of("orderId", 12345)))
+                .isInstanceOf(RuntimeException.class);
+    }
+}
