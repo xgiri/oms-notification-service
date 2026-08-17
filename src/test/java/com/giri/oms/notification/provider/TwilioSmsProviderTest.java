@@ -41,6 +41,17 @@ import static org.mockito.Mockito.when;
  * (max-attempts=2) — a mocked resilience layer would only prove this test
  * calls the mock the way the test itself expects, not that the actual
  * retry/circuit-breaker behavior is correct.
+ * <p>
+ * {@code new ApiException(message, code, moreInfo, status, null, null, null, null)}
+ * below uses the 8-arg constructor {@code (message, code, moreInfo, status,
+ * httpStatusCode, params, userError, cause)} — twilio-java {@code 12.1.1}
+ * (pinned in pom.xml) removed the older 5-arg
+ * {@code (message, code, moreInfo, status, cause)} constructor entirely,
+ * not deprecated it. {@code getStatusCode()} (what
+ * {@code TwilioSmsProvider#isPermanentFailure} actually reads) returns the
+ * 4th arg ({@code status}), not the 5th ({@code httpStatusCode}) — the two
+ * are genuinely different fields on this exception now, so it's the 4th
+ * position that has to carry 400/429/500 below, not the 5th.
  */
 @ExtendWith(MockitoExtension.class)
 class TwilioSmsProviderTest {
@@ -94,7 +105,7 @@ class TwilioSmsProviderTest {
         // commonly-seen permanent failure, not a made-up example.
         ApiException invalidNumber = new ApiException(
                 "The 'To' number is not a valid phone number.", 21211,
-                "https://www.twilio.com/docs/errors/21211", 400, null);
+                "https://www.twilio.com/docs/errors/21211", 400, null, null, null, null);
         when(smsSender.send(anyString(), anyString(), anyString())).thenThrow(invalidNumber);
 
         ProviderResult result = provider.send(request());
@@ -114,7 +125,7 @@ class TwilioSmsProviderTest {
         // than a malformed number but must hit the same code path.
         ApiException optedOut = new ApiException(
                 "Attempt to send to unsubscribed recipient.", 21610,
-                "https://www.twilio.com/docs/errors/21610", 400, null);
+                "https://www.twilio.com/docs/errors/21610", 400, null, null, null, null);
         when(smsSender.send(anyString(), anyString(), anyString())).thenThrow(optedOut);
 
         ProviderResult result = provider.send(request());
@@ -125,7 +136,7 @@ class TwilioSmsProviderTest {
 
     @Test
     void retries_onA429RateLimit_unlikeOtherFourXxFailures() {
-        ApiException rateLimited = new ApiException("Too Many Requests", 20429, null, 429, null);
+        ApiException rateLimited = new ApiException("Too Many Requests", 20429, null, 429, null, null, null, null);
         when(smsSender.send(anyString(), anyString(), anyString())).thenThrow(rateLimited);
 
         ProviderResult result = provider.send(request());
@@ -139,7 +150,7 @@ class TwilioSmsProviderTest {
 
     @Test
     void retriesThenSucceeds_whenATransientFailureIsFollowedByASuccess() {
-        ApiException serverError = new ApiException("Internal Server Error", 20500, null, 500, null);
+        ApiException serverError = new ApiException("Internal Server Error", 20500, null, 500, null, null, null, null);
         when(smsSender.send(anyString(), anyString(), anyString()))
                 .thenThrow(serverError)
                 .thenReturn("SM456def");
@@ -174,7 +185,7 @@ class TwilioSmsProviderTest {
         // fail the whole Kafka message, which is exactly the
         // wrong-granularity failure this design avoids.
         when(smsSender.send(anyString(), anyString(), anyString()))
-                .thenThrow(new ApiException("Internal Server Error", 20500, null, 500, null));
+                .thenThrow(new ApiException("Internal Server Error", 20500, null, 500, null, null, null, null));
 
         Assertions.assertDoesNotThrow(() -> provider.send(request()));
     }

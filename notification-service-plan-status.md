@@ -189,8 +189,36 @@ prioritize writing *first*. Template rendering tests per locale/channel.
   WireMock at. This proves the retry/classification logic is correct; it
   does **not** catch a genuine drift in Twilio's real API shape — the gap
   the plan was specifically worried about for provider tests
-- ⬜ No contract test at all yet for `CustomerClient`/`OrderClient`
-  (the plan's own `OrderClientContractTest` pattern from shipment-service)
+  - **Fixed a compile break in this test.** twilio-java `12.1.1` (pinned in
+    `pom.xml`) removed `ApiException`'s old 5-arg constructor
+    `(message, code, moreInfo, status, cause)` entirely — not deprecated,
+    gone — in favor of an 8-arg one
+    `(message, code, moreInfo, status, httpStatusCode, params, userError, cause)`.
+    All five `new ApiException(...)` call sites in this test updated to the
+    new constructor; also worth noting `getStatusCode()` (what
+    `TwilioSmsProvider#isPermanentFailure` reads) returns the 4th arg
+    (`status`), not the 5th (`httpStatusCode`) — they're now genuinely
+    different fields, not renamed copies of each other. Was breaking
+    `./mvnw test` for the whole module, not just this class.
+- ✅ **`CustomerClient` contract/resilience tests — built.**
+  `CustomerClientContractTest` (real WireMock, real deserialization: happy
+  path, unknown-fields tolerance, a missing `phone`, 404 handling, and the
+  `X-Internal-Service-Key` header actually being sent) +
+  `CustomerClientResilienceTest` (retry-then-fail on 500, no retry on 404,
+  timeout handling, circuit breaker opening after enough failures, 404s not
+  counting toward the breaker).
+- ✅ **`OrderClient` contract/resilience tests — built, same pattern.**
+  `OrderClientContractTest` + `OrderClientResilienceTest`, same coverage
+  shape as `CustomerClient`'s (this service's own `orderclient` package has
+  its own copy of `OrderClientResponse`/`InternalServiceAuthInterceptor`,
+  not oms-main's or shipment-service's — see those classes' own Javadoc —
+  so this needed its own test, not a reuse of `CustomerClient`'s). Both
+  clients now mirror `shipment-service`'s own
+  `OrderClientContractTest`/`OrderClientResilienceTest` pattern exactly —
+  same `*TestSupport` helper class shape, same resilience4j thresholds
+  copied from `application.properties`, same real-HTTP-not-mocked
+  philosophy. Both of this service's outbound clients now have this
+  coverage.
 
 ## §12 — Build phases
 
