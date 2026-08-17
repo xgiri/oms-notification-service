@@ -1,0 +1,229 @@
+# notification-service — Build Plan & Status
+
+This maps every one of the 12 sections from the original notification-service
+plan to what's actually been built, as of the Phase 4 (SMS) work. Status
+tags: **✅ Done**, **🟡 Partial**, **⬜ Not started**.
+
+---
+
+## §1 — Scope: what this service owns
+
+**Plan:** Owns composing/delivering notifications, per-recipient channel
+preferences, delivery status/history, retry and provider fallback, and
+unsubscribe/opt-out state. Does **not** own the business decision of *when*
+to notify (implicit in event subscriptions), customer contact info as
+source of truth (reads from customer-service), or the channel
+infrastructure itself (delegates to providers). Designed as a pure
+consumer-first service — nothing else in OMS calls *into* it synchronously.
+
+**Status: 🟡 Partial**
+- ✅ Composing/delivering, delivery history, unsubscribe/opt-out state
+- ✅ No `NotificationClient` needed anywhere else in OMS — holds as designed
+- ⬜ Provider fallback and the scheduled retry/DLQ piece of "retry" aren't
+  built yet (see §6)
+
+## §2 — Event consumption: what triggers a notification
+
+**Plan:** Subscribe to `oms.order.events`, `oms.payment.events` (if it
+exists separately), `oms.shipment.events`, `oms.customer.events` as an
+independent consumer group. Idempotency via a `processed_events` table
+keyed on `(event_id, notification_type)`, checked/inserted in the same
+transaction as sending.
+
+**Status: 🟡 Partial**
+- ✅ `OrderConfirmed`, `OrderCancelled`, `PaymentConfirmed`, `PaymentFailed`
+  all wired — two Kafka consumer groups (`OrderNotificationConsumer`,
+  `PaymentNotificationConsumer`)
+- ⚠️ Deviation from plan: `oms.payment.events` doesn't exist as its own
+  topic yet, so `PaymentNotificationConsumer` currently reads a second,
+  independent copy of `oms.order.events` instead
+- ✅ `processed_events` idempotency table — built exactly as specified,
+  same transaction as the `notifications` row
+- ⬜ `oms.shipment.events`, `oms.customer.events` — not subscribed to yet;
+  blocked on `shipment-service`/`customer-service` event shapes
+
+## §3 — Recipient resolution: don't duplicate customer data
+
+**Plan:** Two options — (a) synchronous `CustomerClient` call per event
+(simpler, couples availability), or (b) a locally cached read model kept in
+sync via `CustomerCreated`/`CustomerUpdated` events (more resilient, more
+moving parts). Recommendation: start with (a), revisit (b) only if
+customer-service's availability becomes a measured problem.
+
+**Status: ✅ Done — matches the plan's own recommendation**
+- `CustomerClient` built with the same resilient-client shape as the rest
+  of the fleet (Resilience4j circuit breaker/retry/timeout)
+- Phase 4 extended this to resolve `phone` alongside `email`, still via
+  the same single client call
+- Option (b), the local cache, deliberately not built — correct per the
+  plan's own "don't build it preemptively" guidance
+
+## §4 — Composition: templates, not hardcoded strings
+
+**Plan:** One template per `(notification_type, channel, locale)`, locale
+modeled from day one even if only `en` ships. A `NotificationComposer`
+takes the event + resolved recipient and produces a channel-appropriate
+payload.
+
+**Status: ✅ Done**
+- Thymeleaf templates, `<type>_<channel>_<locale>` naming, exactly as
+  specified
+- `locale` carried as a required parameter since Phase 1, even before a
+  second locale existed — per the plan's own reasoning
+- Phase 4 extended `NotificationComposer#compose` to take a `channel`
+  param: EMAIL renders `.html`+`.txt`, SMS renders `.txt` only
+
+## §5 — Provider abstraction: swappable, testable
+
+**Plan:** `NotificationProvider` interface; one implementation per
+channel/provider (`SesEmailProvider`, `TwilioSmsProvider`,
+`FcmPushProvider`); never call a provider SDK directly from business
+logic; each provider gets its own Resilience4j circuit breaker/retry
+instance.
+
+**Status: 🟡 Partial**
+- ✅ `NotificationProvider` interface, `SmtpEmailProvider` (Phase 1),
+  `TwilioSmsProvider` (Phase 4) — each with its own resilience4j instance
+- ✅ Followed the plan's explicit checklist item: `minimum-number-of-calls`
+  set explicitly for `twilioSmsProvider`, learned from the gap found twice
+  before
+- ⬜ No push provider (`FcmPushProvider` or equivalent) yet
+
+## §6 — Delivery reliability
+
+**Plan:** In-call Resilience4j retry for transient failures, **plus** a
+separate notification-level retry/DLQ — a `status` column
+(PENDING/SENT/FAILED/DEAD_LETTERED) and a scheduled retrier mirroring
+`OutboxPublisher`'s poll-and-retry shape, distinct from Kafka's own
+retry/DLT (which is for message-processing failures, not downstream-send
+failures). Provider fallback (email → SMS on failure) explicitly flagged
+as a product decision to make later, not to build speculatively.
+
+**Status: 🟡 Partial — this is the clearest open gap**
+- ✅ In-call resilience4j retry — done for both providers, including the
+  permanent-vs-transient classification for `TwilioSmsProvider` (a bad
+  phone number doesn't retry; a 5xx/429 does)
+- ⬜ **The scheduled retry/DLQ piece isn't built.** A `FAILED` notification
+  today has no independent retrier — this was flagged explicitly as a gap
+  early in Phase 4 and hasn't been picked up since
+- ✅ Provider fallback correctly *not* built — matches the plan's own
+  "don't over-engineer this speculatively" guidance
+
+## §7 — Preferences & compliance
+
+**Plan:** Per-customer, per-type, per-channel opt-in/opt-out. Unsubscribe
+must work even if the rest of the system is down. Transactional vs.
+marketing distinction modeled from the start, not retrofitted.
+
+**Status: 🟡 Partial**
+- ✅ `notification_preferences` table, real for both EMAIL and SMS as of
+  Phase 4
+- ✅ Unsubscribe endpoint — signed HMAC token, stateless, not
+  JWT-authenticated, works independent of Kafka/other services being up —
+  built to spec
+- ✅ `transactional: true/false` modeled on `NotificationType` from day one
+- ⬜ Every type is currently `transactional = true` as a placeholder —
+  opt-out enforcement is short-circuited to "always send" regardless of a
+  stored preference, pending real legal sign-off on which types can
+  actually be opted out of
+
+## §8 — Data model
+
+**Plan:** Own dedicated database. `notifications` (one row per attempted
+send), `processed_events` (idempotency), `notification_preferences`. No
+outbox table needed unless something downstream needs to react to
+`NotificationSent`/`NotificationFailed`.
+
+**Status: ✅ Done**
+- All three tables built exactly as specified
+- No outbox table — correctly deferred; no real consumer for one exists
+  yet, matching the plan's own "don't build it until there's a real
+  consumer" guidance
+
+## §9 — API surface: deliberately minimal
+
+**Plan:** `GET /notifications?customerId=`, `GET /notifications/{id}`,
+`POST /notifications/{id}/resend`, preference management endpoints, and a
+token-based (not JWT) unsubscribe endpoint.
+
+**Status: ✅ Done**
+- All five endpoint shapes implemented in `NotificationController`
+- One known limitation: `resend` reconstructs template variables from
+  stored columns only — fine for `ORDER_CONFIRMED`, would under-populate a
+  richer future notification type (documented on `resend`'s own Javadoc)
+
+## §10 — Observability
+
+**Plan:** OpenTelemetry + Tempo matching the fleet. Prometheus metrics +
+a Grafana dashboard from day one. A notification-specific metric the other
+services don't need: time-to-delivery (event received → notification
+sent).
+
+**Status: 🟡 Partial**
+- ✅ OTel/Tempo wired to the same OTLP endpoint as the rest of OMS
+- ⬜ No Prometheus scrape target or Grafana dashboard yet — this is Phase
+  5 (infra parity), not started
+- ⬜ No time-to-delivery metric yet
+
+## §11 — Testing strategy
+
+**Plan:** Unit tests for composer (template rendering) and
+preference/opt-out logic. WireMock-based contract tests per provider —
+called out as *critical*, since a provider API's response shape drifting
+silently breaks delivery. An idempotency test (same event delivered twice
+→ exactly one send) — explicitly flagged as the one test category to
+prioritize writing *first*. Template rendering tests per locale/channel.
+
+**Status: 🟡 Partial**
+- ✅ Composer unit tests — both EMAIL and SMS, using a real
+  `SpringTemplateEngine` against real template files (not mocked), which
+  is what actually catches a template-resolution regression
+- ✅ Idempotency test — built and prioritized exactly as the plan asked,
+  its own nested test class
+- ✅ Preference/opt-out logic — covered (`PreferenceEnforcement` nested
+  class)
+- 🟡 Provider testing is real but **not literally WireMock-based** as the
+  plan specified: `TwilioSmsProviderTest` exercises the resilience/retry
+  logic against a mocked `SmsSender` seam instead, since twilio-java owns
+  its HTTP client internally with no clean base-URL override to point
+  WireMock at. This proves the retry/classification logic is correct; it
+  does **not** catch a genuine drift in Twilio's real API shape — the gap
+  the plan was specifically worried about for provider tests
+- ⬜ No contract test at all yet for `CustomerClient`/`OrderClient`
+  (the plan's own `OrderClientContractTest` pattern from shipment-service)
+
+## §12 — Build phases
+
+The plan's own 5-phase rollout sequence, and where each stands:
+
+1. **Scaffold + one channel, one event type** — ✅ Done. Email, `OrderConfirmed` only, proved the skeleton end to end.
+2. **Preferences + opt-out, before more event types** — 🟡 Partial. Signed unsubscribe token done; per-type enforcement still a placeholder pending legal sign-off.
+3. **Remaining event types on email** — 🟡 Partial. `OrderCancelled`, `PaymentConfirmed`, `PaymentFailed` done. Shipment lifecycle events and `CustomerWelcome` still open, blocked on other services' event shapes.
+4. **Additional channels (SMS, push)** — 🟡 Partial. SMS fully done (`TwilioSmsProvider`, templates, multi-channel fan-out in `NotificationServiceImpl`). Push not started — blocked on a `customer-service` schema change (no push-token field exists yet).
+5. **Infra parity** — ⬜ Not started. No k8s manifests, no Prometheus scrape target, no Grafana dashboard.
+
+---
+
+## Summary
+
+| # | Section | Status |
+|---|---|---|
+| 1 | Scope | 🟡 Partial |
+| 2 | Event consumption | 🟡 Partial |
+| 3 | Recipient resolution | ✅ Done |
+| 4 | Composition | ✅ Done |
+| 5 | Provider abstraction | 🟡 Partial |
+| 6 | Delivery reliability | 🟡 Partial |
+| 7 | Preferences & compliance | 🟡 Partial |
+| 8 | Data model | ✅ Done |
+| 9 | API surface | ✅ Done |
+| 10 | Observability | 🟡 Partial |
+| 11 | Testing strategy | 🟡 Partial |
+| 12 | Build phases | 🟡 Partial (2 of 5 phases fully closed) |
+
+**The single most consequential open item** is §6's scheduled retry/DLQ —
+every other gap here is either a deferred phase (push, infra) or a
+placeholder pending an external decision (legal sign-off on opt-out). The
+retry/DLQ gap is different: it's inside Phase 1's own scope and means a
+`FAILED` notification today has no path back to `SENT` without a human
+manually hitting `POST /resend`.
