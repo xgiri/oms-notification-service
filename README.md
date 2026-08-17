@@ -7,20 +7,21 @@ every convention this system already established: same package layout,
 same JWT-verification-only security posture, same resilient-client pattern,
 same web/worker-role convention.
 
-**Current status: Phase 3 in progress — one channel (email), four event
-types wired (`OrderConfirmed`, `OrderCancelled`, `PaymentConfirmed`,
-`PaymentFailed`).** See [Build phases](#build-phases) for the full staged
-plan and exactly what's implemented vs. planned.
+**Current status: Phase 4 in progress — two channels (email, SMS), four
+event types wired (`OrderConfirmed`, `OrderCancelled`, `PaymentConfirmed`,
+`PaymentFailed`) on both channels.** See [Build phases](#build-phases) for
+the full staged plan and exactly what's implemented vs. planned.
 
 ## What it does
 
 Listens to `oms-main`'s Kafka event stream and turns order lifecycle events
-into customer notifications — order confirmations today, with payment and
-shipment lifecycle events staged for later phases. Every send is recorded
+into customer notifications — order confirmations, cancellations, and
+payment outcomes today, on email and SMS, with shipment lifecycle events
+and a push channel staged for later phases. Every send is recorded
 (`notifications` table) so delivery history is queryable, every event is
 processed idempotently (a Kafka redelivery must never double-send), and
-every customer has per-(type, channel) opt-in/opt-out state from day one
-even though only email exists to opt in/out of yet.
+every customer has per-(type, channel) opt-in/opt-out state — real for both
+channels that exist today, not just scaffolded.
 
 ## Architecture
 
@@ -34,16 +35,28 @@ Kafka (oms.order.events)
                (PaymentConfirmed, PaymentFailed — own consumer group)
         │
         ▼
-NotificationServiceImpl (idempotency → preference check → compose → send → record)
+NotificationServiceImpl (idempotency → preference check across every
+                          registered channel → ONE customer lookup →
+                          per opted-in channel: compose → send → record)
         │                                      │                    │
         ▼                                      ▼                    ▼
-CustomerClient ──▶ customer-service   NotificationComposer   NotificationProvider
-  (resolve email)                      (Thymeleaf templates)   (SmtpEmailProvider → Mailpit)
+CustomerClient ──▶ customer-service   NotificationComposer     ┌─────────────────────────┐
+  (resolve email/phone)                (Thymeleaf templates,   │ NotificationProvider     │
+                                         channel-aware since    │  ├─ SmtpEmailProvider    │──▶ Mailpit
+                                         Phase 4)                │  └─ TwilioSmsProvider    │──▶ SmsSender ──▶ Twilio
+                                                                 └─────────────────────────┘
 ```
 
+Fan-out is per registered `NotificationProvider` bean, not a hardcoded
+channel list — see `NotificationServiceImpl#registeredChannels`'s own
+Javadoc. One `notifications` row is written per channel actually attempted;
+`processed_events` stays keyed on `(event_id, notification_type)` only, so
+a redelivery skips every channel together, not one at a time.
+
 - **`notification`** — the domain: entities, repositories, the orchestration
-  service (`NotificationServiceImpl`), the provider abstraction, the one
-  Phase 1 consumer, the REST controller.
+  service (`NotificationServiceImpl`), the provider abstraction (now two
+  implementations — `SmtpEmailProvider`, `TwilioSmsProvider`), the two
+  Phase 3 consumers, the REST controller.
 - **`customerclient`** / **`orderclient`** — resilient clients for this
   service's two synchronous dependencies (see
   [Two clients, and why](#two-clients-and-why) below).
@@ -107,6 +120,51 @@ completely would mean a two-phase or saga-style handoff with the SMTP
 provider, which is disproportionate for Phase 1 — flagged here rather than
 silently assumed away.
 
+### Multi-channel fan-out (Phase 4), and what changed to support it
+
+Phase 1–3 hardcoded `NotificationChannel.EMAIL`. Phase 4 replaced that with
+a loop over every channel that has a registered `NotificationProvider`
+bean *and* that the customer is opted into for that notification type —
+see `NotificationServiceImpl#registeredChannels`/`#processEvent`'s own
+Javadoc for the full ordering. Three things worth knowing about how this
+actually behaves:
+
+- **The customer lookup still happens once, not once per channel** —
+  `CustomerClientResponse` now carries `phone` alongside `email`, so a
+  single `CustomerClient` round-trip resolves the recipient address for
+  every channel this event will fan out to.
+- **A channel with no recipient address on file is skipped silently** — a
+  log line, not a `FAILED` Notification row, since there was nothing to
+  attempt (see `#recipientAddressFor`'s own Javadoc). This is a real
+  design tradeoff, not an obviously-correct default: it means a customer
+  opted into SMS with no phone number on file produces no visible signal
+  in the `notifications` table at all. Revisit if that turns out to hide a
+  data-quality problem worth surfacing on a dashboard instead.
+- **`processed_events` is still written once per event**, after every
+  channel has been attempted — not once per channel. A redelivery must
+  skip every channel together, never re-attempt just the ones that failed
+  last time (that's `NotificationRetryScheduler`'s job, not Kafka
+  redelivery's).
+
+**`TwilioSmsProvider`** is the second `NotificationProvider`
+implementation, alongside `SmtpEmailProvider`. Same programmatic
+resilience4j composition as `CustomerClientImpl`/`OrderClientImpl` (own
+`CircuitBreaker` + `Retry` pulled from the registry by instance name), but
+permanent-vs-transient classification works differently: rather than
+resilience4j's `ignore-exceptions`, `TwilioSmsProvider#doSend` itself
+decides — a recipient-specific 4xx (bad number, opted out via STOP,
+unverified trial number — anything except a 429 rate limit) is returned as
+an ordinary `ProviderResult.failure` without throwing at all, so `Retry`
+never even considers it. See that class's own Javadoc for the reasoning.
+
+The actual Twilio SDK call is behind a one-method seam,
+**`SmsSender`**/`TwilioSmsSender`, purely so `TwilioSmsProviderTest` can
+exercise the resilience logic against a mock instead of needing WireMock or
+real Twilio credentials — twilio-java owns its HTTP client internally, so
+there's no clean base-URL override to point at WireMock the way
+`CustomerClient`/`OrderClient`'s plain `RestClient` allows. See
+[Testing](#testing) for what that tradeoff does and doesn't cover.
+
 ## API
 
 Deliberately minimal — see `notification.controller.NotificationController`.
@@ -156,11 +214,15 @@ secret is simpler and sufficient. No cross-repo change was needed.
   row, it doesn't create a second one).
 - **`processed_events`** — the idempotency guard, see above.
 - **`notification_preferences`** — per-(customer, type, channel) opt-in
-  state. Absence of a row means opted-in. Every `NotificationType` today is
-  `transactional = true` (see that enum's own Javadoc on the CAN-SPAM/GDPR
-  reasoning), which currently means opt-out is ignored for all of them —
-  get real legal sign-off on which types genuinely can't be opted out of
-  before relying on that placeholder stance in a real deployment.
+  state. Absence of a row means opted-in. Real for both `EMAIL` and `SMS`
+  now that Phase 4 registered a second provider — see
+  [Multi-channel fan-out](#multi-channel-fan-out-phase-4-and-what-changed-to-support-it)
+  above. Every `NotificationType` today is still `transactional = true`
+  (see that enum's own Javadoc on the CAN-SPAM/GDPR reasoning), which
+  currently means opt-out is ignored for all of them regardless of
+  channel — get real legal sign-off on which types genuinely can't be
+  opted out of before relying on that placeholder stance in a real
+  deployment.
 
 No outbox table — this service has no producer role yet (see
 `notification.service`'s package-info). Add one the same way
@@ -217,7 +279,13 @@ not collide with `product-service` (`8082`/`8091`/`5433`),
 
 Includes a **Mailpit** container (a local SMTP catcher) — `SmtpEmailProvider`
 points at it by default, so local dev needs zero cloud credentials. Web UI
-at `http://localhost:8025` to actually see what this service sent.
+at `http://localhost:8025` to actually see what this service sent. **No
+local SMS catcher exists yet** — `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN`/
+`TWILIO_FROM_NUMBER` are required (no safe defaults, same reasoning as
+`INTERNAL_SERVICE_API_KEY` below), so exercising `TwilioSmsProvider` end to
+end locally currently means either real (test-mode) Twilio credentials or
+relying on `TwilioSmsProviderTest`'s mocked-`SmsSender` coverage instead —
+see [Testing](#testing).
 
 `INTERNAL_SERVICE_API_KEY` is required (no safe default) — see the Security
 section above for what it currently does and doesn't protect.
@@ -251,7 +319,10 @@ to the order that triggered it). Not built in Phase 1.
 - `NotificationServiceImplTest` — the orchestration logic, idempotency
   first (see its own `Idempotency` nested class — this is the test category
   prioritized above all others, per this service's own design goals),
-  preference enforcement, and failed-send handling.
+  preference enforcement, failed-send handling, and (new in Phase 4) a
+  `MultiChannelFanOut` nested class: sends to every opted-in channel,
+  respects a per-channel opt-out, and skips SMS cleanly (no `FAILED` row)
+  when a customer has no phone number on file.
 - `OrderNotificationConsumerTest` / `PaymentNotificationConsumerTest` —
   each Kafka listener's dispatch logic: ignoring other event types,
   tolerating unknown JSON fields, propagating (not swallowing) dependency
@@ -259,23 +330,46 @@ to the order that triggered it). Not built in Phase 1.
 - `NotificationComposerImplTest` — renders the *real* template files
   through a *real* `SpringTemplateEngine` (not mocked) — this is what
   actually catches a template-resolution regression like the one
-  `ThymeleafConfig` fixes, which a mocked engine couldn't. Also covers the
-  unsubscribe link being interpolated into both the HTML and text bodies.
+  `ThymeleafConfig` fixes, which a mocked engine couldn't. Covers the
+  unsubscribe link being interpolated into both the HTML and text bodies,
+  and (new in Phase 4) SMS-specific cases: `htmlBody` comes back `null`
+  (not empty) for SMS, and a missing SMS template throws the same way a
+  missing EMAIL template does.
 - `UnsubscribeTokenServiceTest` — round-trips a real token through the real
   generate/parse path (no mocked jjwt): a customer/type/channel survives
   the round trip, a token signed with a different secret is rejected, an
   expired token is rejected, and a well-signed token that was never minted
   for the `unsubscribe` purpose is rejected too.
+- `TwilioSmsProviderTest` *(new in Phase 4)* — exercises `TwilioSmsProvider`
+  against a mocked `SmsSender`, with **real** (not mocked) resilience4j
+  `Retry`/`CircuitBreaker` instances shaped to mirror the prod config:
+  a permanent 4xx (invalid number, recipient replied STOP) sends exactly
+  once, no retry; a 429 and a 5xx both retry; a connection failure with no
+  HTTP status at all is treated as transient; retries fully exhausted still
+  never throws out of `send()`. See `SmsSender`'s own Javadoc for why this
+  is a mocked-collaborator test and not a WireMock contract test — the
+  paragraph immediately below explains what that leaves uncovered.
 
 **Not yet built**: a WireMock-based contract test for `CustomerClient`/
 `OrderClient` (same pattern `shipment-service`'s `OrderClientContractTest`/
 `OrderClientResilienceTest` establish — retry/circuit-breaker behavior under
 real HTTP failures), and any test exercising `InternalServiceAuthInterceptor`
-itself.
+itself. **Also not yet built**: any test that verifies `TwilioSmsSender`'s
+actual HTTP call still matches Twilio's real API response shape —
+`TwilioSmsProviderTest` proves this service's own retry/classification
+logic is correct against a mock, but a genuine drift in Twilio's API (a
+renamed field, a changed status-code convention) wouldn't be caught by
+anything in this repo today. twilio-java owns its HTTP client internally
+with no clean base-URL override, so pointing WireMock at it the way
+`OrderClientContractTest` points at a plain `RestClient` isn't
+straightforward — flagged here rather than silently assumed covered.
 
-**Not yet run**: the unsubscribe-token change (code, tests, `pom.xml`'s new
-jjwt dependency) hasn't been compiled/run in this environment — no Maven
-Central access here. Run `./mvnw test` before trusting it fully.
+**Not yet run**: neither the unsubscribe-token change (code, tests,
+`pom.xml`'s new jjwt dependency) nor the Phase 4 SMS/multi-channel change
+(new `twilio` dependency, `TwilioSmsProvider`, `SmsSender`, the
+`NotificationServiceImpl` fan-out rewrite, and every test touched above)
+has been compiled/run in this environment — no Maven Central access here.
+Run `./mvnw test` before trusting either fully.
 
 ## Build phases
 
@@ -284,10 +378,12 @@ fully built. Phase 2 is partially built** — the signed unsubscribe-token
 piece is done; the other Phase 2 item (real per-type opt-out enforcement,
 currently short-circuited for every type since all are `transactional`)
 is still open, pending legal sign-off on which types genuinely can't be
-opted out of. **Phase 3 is in progress** — `PaymentConfirmed`/`PaymentFailed`
-are wired; `OrderCancelled`, the shipment lifecycle events, and
-`CustomerWelcome` are still open. Phases 4–5 are the roadmap, not
-implemented.
+opted out of. **Phase 3, on the email channel, is fully wired** —
+`OrderConfirmed`/`OrderCancelled`/`PaymentConfirmed`/`PaymentFailed` are
+all done; the shipment lifecycle events and `CustomerWelcome` remain open,
+blocked on event shapes this service doesn't own. **Phase 4 is in
+progress** — SMS is done for all four wired event types; push and the
+infra-parity checklist (Phase 5) are still ahead.
 
 1. **Scaffold + one channel, one event type** *(this build)* — email only,
    `OrderConfirmed` only. Proves the skeleton (Kafka consumer, idempotency,
@@ -330,13 +426,22 @@ implemented.
      worth fixing once, for all of them, rather than adding yet another
      `*Client` per remaining event type.
 4. **Additional channels** (SMS, push) — `NotificationProvider`'s interface
-   is what should make this additive (a new implementation), not a rewrite,
-   if Phase 1 built that abstraction correctly.
+   is what should make this additive (a new implementation), not a
+   rewrite, if Phase 1 built that abstraction correctly. It did:
+   - **Done:** SMS — `TwilioSmsProvider` (behind the `SmsSender` seam, see
+     [Multi-channel fan-out](#multi-channel-fan-out-phase-4-and-what-changed-to-support-it)
+     above), SMS templates for all four wired event types, and
+     `NotificationServiceImpl`'s fan-out rewrite so a customer opted into
+     both channels gets both, not just email.
+   - **Still open:** push. No provider, no template set, and no field on
+     `CustomerClientResponse`/`customer-service`'s `Customer` entity for a
+     push token yet — that last part is a cross-repo change, unlike SMS
+     which only needed the already-reserved `phone` field.
 5. **Infra parity** — Kubernetes manifests, Prometheus scrape target,
    Grafana dashboard, same checklist `shipment-service`'s own Stage 7
    established. Not started.
 
-## Known gaps (Phase 1 + partial Phase 2)
+## Known gaps (through Phase 4)
 
 Collected in one place for visibility, even though each is also documented
 at its point of origin in code:
@@ -352,13 +457,31 @@ at its point of origin in code:
   `NotificationPreferenceServiceImpl.isOptedIn`. Real per-type legal
   sign-off is still needed; the unsubscribe *token* itself is fixed (see
   below), but opting out currently has no effect for any type that exists
-  today.
+  today. This now applies identically to SMS, not just email.
 - **`resend` reconstructs template variables from stored columns only** —
   fine for `ORDER_CONFIRMED`, would under-populate a richer future type. See
   `NotificationService.resend`'s own Javadoc.
-- **No contract/resilience tests for either client yet** — see
-  [Testing](#testing).
+- **No contract/resilience tests for `CustomerClient`/`OrderClient` yet** —
+  see [Testing](#testing).
+- **No true HTTP-contract test for `TwilioSmsSender`** *(new)* —
+  `TwilioSmsProviderTest` covers this service's own retry/classification
+  logic against a mock; nothing yet catches a real drift in Twilio's API
+  shape. See [Testing](#testing) for the full reasoning on why this is
+  harder to close than the RestClient-based clients' equivalent gap.
+- **A customer opted into SMS with no phone number on file produces no
+  visible failure signal** *(new)* — silently skipped, not recorded as
+  `FAILED`. See
+  [Multi-channel fan-out](#multi-channel-fan-out-phase-4-and-what-changed-to-support-it)
+  for the reasoning and why it's worth revisiting if it turns out to hide
+  a real data-quality problem.
+- **No push channel** *(new)* — no provider, no template set, and no field
+  on `CustomerClientResponse`/`customer-service`'s `Customer` entity for a
+  push token. The last part is a cross-repo change SMS didn't need.
 - **No infra (Kubernetes/monitoring) at all** — Phase 5, not started.
 
 **Fixed this session:** the unsubscribe endpoint's signed-token gap — see
 [API](#api) and `security.UnsubscribeTokenService`.
+
+**Added this session:** the SMS channel end to end — `TwilioSmsProvider`,
+the `SmsSender` seam, SMS templates for all four wired event types, and
+`NotificationServiceImpl`'s multi-channel fan-out rewrite.

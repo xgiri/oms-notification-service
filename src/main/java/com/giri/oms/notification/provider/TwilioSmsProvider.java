@@ -2,8 +2,6 @@ package com.giri.oms.notification.provider;
 
 import com.giri.oms.notification.entity.NotificationChannel;
 import com.twilio.exception.ApiException;
-import com.twilio.rest.api.v2010.account.Message;
-import com.twilio.type.PhoneNumber;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import io.github.resilience4j.retry.Retry;
@@ -36,6 +34,12 @@ import java.util.function.Supplier;
  * reacts to exceptions, not return values). Only a genuinely transient
  * failure (5xx, 429, connection errors) is thrown from {@code doSend}, so
  * only those reach Retry/CircuitBreaker.
+ * <p>
+ * The actual Twilio SDK call is delegated to the injected {@link SmsSender}
+ * rather than made directly here — see that interface's own Javadoc for
+ * why: it's what lets {@code TwilioSmsProviderTest} exercise every branch
+ * above (permanent vs. transient, retry-then-succeed, circuit open) against
+ * a mocked collaborator, deterministically and without network access.
  */
 @Slf4j
 @Component
@@ -43,13 +47,16 @@ public class TwilioSmsProvider implements NotificationProvider {
 
     private static final String RESILIENCE_INSTANCE_NAME = "twilioSmsProvider";
 
+    private final SmsSender smsSender;
     private final CircuitBreaker circuitBreaker;
     private final Retry retry;
     private final String fromNumber;
 
-    public TwilioSmsProvider(CircuitBreakerRegistry circuitBreakerRegistry,
+    public TwilioSmsProvider(SmsSender smsSender,
+                              CircuitBreakerRegistry circuitBreakerRegistry,
                               RetryRegistry retryRegistry,
                               @Value("${app.notification.sms.from-number}") String fromNumber) {
+        this.smsSender = smsSender;
         this.circuitBreaker = circuitBreakerRegistry.circuitBreaker(RESILIENCE_INSTANCE_NAME);
         this.retry = retryRegistry.retry(RESILIENCE_INSTANCE_NAME);
         this.fromNumber = fromNumber;
@@ -81,13 +88,8 @@ public class TwilioSmsProvider implements NotificationProvider {
 
     private ProviderResult doSend(NotificationRequest request) {
         try {
-            Message message = Message.creator(
-                    new PhoneNumber(request.recipientAddress()),
-                    new PhoneNumber(fromNumber),
-                    request.textBody()
-            ).create();
-
-            return ProviderResult.success(message.getSid());
+            String providerMessageId = smsSender.send(request.recipientAddress(), fromNumber, request.textBody());
+            return ProviderResult.success(providerMessageId);
         } catch (ApiException ex) {
             if (isPermanentFailure(ex)) {
                 log.warn("Permanent SMS send failure to {}: {} (twilioCode={}, httpStatus={})",
