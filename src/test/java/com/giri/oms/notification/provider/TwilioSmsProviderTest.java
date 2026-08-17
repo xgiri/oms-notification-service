@@ -26,14 +26,13 @@ import static org.mockito.Mockito.when;
  * Exercises {@link TwilioSmsProvider} against a mocked {@link SmsSender} —
  * see that interface's own Javadoc for why this is a mocked-collaborator
  * unit test rather than a WireMock-based contract test like
- * {@code OrderClientContractTest}. That distinction matters for what these
- * tests can and can't catch: they prove this class's OWN logic (permanent
- * vs. transient classification, retry count, circuit-breaker tripping) is
- * correct; they say nothing about whether {@link TwilioSmsSender}'s actual
- * HTTP call still matches Twilio's real API shape (a genuine drift there —
- * a renamed field, a changed status code convention — wouldn't be caught by
- * anything in this class). That gap is flagged as still open in this
- * service's README.
+ * {@code OrderClientContractTest}, and why that's a considered decision,
+ * not an unaddressed gap. What THIS class proves: this class's OWN logic
+ * (permanent vs. transient classification, retry count, circuit-breaker
+ * tripping) is correct — it says nothing about whether
+ * {@link TwilioSmsSender}'s actual HTTP call still matches Twilio's real
+ * API shape, which isn't this codebase's risk surface to begin with (see
+ * {@link SmsSender}'s Javadoc).
  * <p>
  * Real (not mocked) resilience4j {@code Retry}/{@code CircuitBreaker}
  * instances are built here, shaped to mirror
