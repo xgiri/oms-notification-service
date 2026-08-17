@@ -7,17 +7,19 @@ every convention this system already established: same package layout,
 same JWT-verification-only security posture, same resilient-client pattern,
 same web/worker-role convention.
 
-**Current status: Phase 4 in progress — two channels (email, SMS), four
+**Current status: Phase 4 in progress — two channels (email, SMS), five
 event types wired (`OrderConfirmed`, `OrderCancelled`, `PaymentConfirmed`,
-`PaymentFailed`) on both channels.** See [Build phases](#build-phases) for
-the full staged plan and exactly what's implemented vs. planned.
+`PaymentFailed` on both channels; `CustomerWelcome` newly added on both
+channels).** See [Build phases](#build-phases) for the full staged plan and
+exactly what's implemented vs. planned.
 
 ## What it does
 
-Listens to `oms-main`'s Kafka event stream and turns order lifecycle events
-into customer notifications — order confirmations, cancellations, and
-payment outcomes today, on email and SMS, with shipment lifecycle events
-and a push channel staged for later phases. Every send is recorded
+Listens to `oms-main`'s and `customer-service`'s Kafka event streams and
+turns order lifecycle and account events into customer notifications —
+order confirmations, cancellations, payment outcomes, and account welcome
+emails today, on email and SMS, with shipment lifecycle events and a push
+channel staged for later phases. Every send is recorded
 (`notifications` table) so delivery history is queryable, every event is
 processed idempotently (a Kafka redelivery must never double-send), and
 every customer has per-(type, channel) opt-in/opt-out state — real for both
@@ -33,6 +35,12 @@ Kafka (oms.order.events)
         │
         └──▶ PaymentNotificationConsumer ──▶ OrderClient ──▶ oms-main (resolve customerId)
                (PaymentConfirmed, PaymentFailed — own consumer group)
+
+Kafka (oms.customer.events)
+        │
+        └──▶ CustomerWelcomeConsumer (own consumer group — no OrderClient/
+               CustomerClient lookup needed; CustomerCreatedEvent already
+               carries customerId directly)
         │
         ▼
 NotificationServiceImpl (idempotency → preference check across every
@@ -323,7 +331,8 @@ to the order that triggered it). Not built in Phase 1.
   `MultiChannelFanOut` nested class: sends to every opted-in channel,
   respects a per-channel opt-out, and skips SMS cleanly (no `FAILED` row)
   when a customer has no phone number on file.
-- `OrderNotificationConsumerTest` / `PaymentNotificationConsumerTest` —
+- `OrderNotificationConsumerTest` / `PaymentNotificationConsumerTest` /
+  `CustomerWelcomeConsumerTest` —
   each Kafka listener's dispatch logic: ignoring other event types,
   tolerating unknown JSON fields, propagating (not swallowing) dependency
   failures.
@@ -378,12 +387,13 @@ fully built. Phase 2 is partially built** — the signed unsubscribe-token
 piece is done; the other Phase 2 item (real per-type opt-out enforcement,
 currently short-circuited for every type since all are `transactional`)
 is still open, pending legal sign-off on which types genuinely can't be
-opted out of. **Phase 3, on the email channel, is fully wired** —
-`OrderConfirmed`/`OrderCancelled`/`PaymentConfirmed`/`PaymentFailed` are
-all done; the shipment lifecycle events and `CustomerWelcome` remain open,
-blocked on event shapes this service doesn't own. **Phase 4 is in
-progress** — SMS is done for all four wired event types; push and the
-infra-parity checklist (Phase 5) are still ahead.
+opted out of. **Phase 3 is now fully wired** —
+`OrderConfirmed`/`OrderCancelled`/`PaymentConfirmed`/`PaymentFailed`/
+`CustomerWelcome` are all done on the email channel; only the shipment
+lifecycle events remain open, blocked on `shipment-service`'s event
+shapes, not yet available. **Phase 4 is in progress** — SMS is done for
+all five wired event types; push and the infra-parity checklist (Phase 5)
+are still ahead.
 
 1. **Scaffold + one channel, one event type** *(this build)* — email only,
    `OrderConfirmed` only. Proves the skeleton (Kafka consumer, idempotency,
@@ -418,10 +428,19 @@ infra-parity checklist (Phase 5) are still ahead.
      independent copy of `oms.order.events` rather than competing for
      partitions with `OrderNotificationConsumer` — see that property's own
      comment in `application.properties`.
+   - **Done:** `CustomerWelcome` — see
+     `notification.consumer.CustomerWelcomeConsumer`, on customer-service's
+     `oms.customer.events` topic, its own dedicated consumer group
+     (`app.kafka.consumer.customer-group-id`). Unlike every other consumer
+     here, **no synchronous lookup is needed to find the recipient** —
+     `CustomerCreatedEvent` carries `customerId` directly (it's the event's
+     own aggregate), so there's no customerId gap to work around for this
+     one. `NotificationServiceImpl#processEvent` still re-resolves the
+     email via `CustomerClient` internally regardless — a known, accepted
+     redundant hop, not a bug — see that consumer's own Javadoc for why.
    - **Still open:** `ShipmentShipped`, `ShipmentDelivered`,
-     `ShipmentReturned`, `CustomerWelcome` — need `shipment-service`/
-     `customer-service` event shapes, not yet available. Also the natural
-     point to revisit
+     `ShipmentReturned` — need `shipment-service`'s event shapes, not yet
+     available. Also the natural point to revisit
      [the customerId gap](#the-customerid-gap-and-the-recommended-fix) —
      worth fixing once, for all of them, rather than adding yet another
      `*Client` per remaining event type.

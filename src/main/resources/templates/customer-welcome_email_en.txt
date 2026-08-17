@@ -1,0 +1,10 @@
+Welcome!
+
+Thanks for creating an account with us. We're glad to have you.
+
+You're all set to start browsing and placing orders whenever you're ready.
+
+---
+This is a transactional email related to your account. You can manage your
+notification preferences at any time from your account, or unsubscribe
+from this notification type: [(${unsubscribeUrl})]

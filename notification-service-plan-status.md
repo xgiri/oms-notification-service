@@ -1,8 +1,9 @@
 # notification-service — Build Plan & Status
 
 This maps every one of the 12 sections from the original notification-service
-plan to what's actually been built, as of the Phase 4 (SMS) work. Status
-tags: **✅ Done**, **🟡 Partial**, **⬜ Not started**.
+plan to what's actually been built, as of Phase 4 (SMS) plus the newly
+added `CustomerWelcome` consumer (Phase 3's last email-channel event type).
+Status tags: **✅ Done**, **🟡 Partial**, **⬜ Not started**.
 
 ---
 
@@ -31,16 +32,20 @@ keyed on `(event_id, notification_type)`, checked/inserted in the same
 transaction as sending.
 
 **Status: 🟡 Partial**
-- ✅ `OrderConfirmed`, `OrderCancelled`, `PaymentConfirmed`, `PaymentFailed`
-  all wired — two Kafka consumer groups (`OrderNotificationConsumer`,
-  `PaymentNotificationConsumer`)
+- ✅ `OrderConfirmed`, `OrderCancelled`, `PaymentConfirmed`, `PaymentFailed`,
+  `CustomerCreated` (→ `CustomerWelcome`) all wired — three Kafka consumer
+  groups (`OrderNotificationConsumer`, `PaymentNotificationConsumer`,
+  `CustomerWelcomeConsumer`)
 - ⚠️ Deviation from plan: `oms.payment.events` doesn't exist as its own
   topic yet, so `PaymentNotificationConsumer` currently reads a second,
   independent copy of `oms.order.events` instead
 - ✅ `processed_events` idempotency table — built exactly as specified,
   same transaction as the `notifications` row
-- ⬜ `oms.shipment.events`, `oms.customer.events` — not subscribed to yet;
-  blocked on `shipment-service`/`customer-service` event shapes
+- ✅ `oms.customer.events` — subscribed (`CustomerWelcomeConsumer`), own
+  dedicated consumer group even though it's currently the only listener on
+  that topic — see `application.properties`' own comment on why
+- ⬜ `oms.shipment.events` — not subscribed to yet; blocked on
+  `shipment-service`'s event shapes
 
 ## §3 — Recipient resolution: don't duplicate customer data
 
@@ -57,6 +62,12 @@ customer-service's availability becomes a measured problem.
   the same single client call
 - Option (b), the local cache, deliberately not built — correct per the
   plan's own "don't build it preemptively" guidance
+- One consumer (`CustomerWelcomeConsumer`) doesn't have the customerId gap
+  at all — `CustomerCreatedEvent` carries `customerId` directly, since
+  Customer is that event's own aggregate. `NotificationServiceImpl` still
+  re-resolves the recipient via `CustomerClient` for this caller too,
+  a known/accepted redundant hop kept for consistency — see that
+  consumer's own Javadoc.
 
 ## §4 — Composition: templates, not hardcoded strings
 
@@ -236,6 +247,11 @@ prioritize writing *first*. Template rendering tests per locale/channel.
   copied from `application.properties`, same real-HTTP-not-mocked
   philosophy. Both of this service's outbound clients now have this
   coverage.
+- ✅ **`CustomerWelcomeConsumerTest` — built**, same dispatch-logic shape
+  as `OrderNotificationConsumerTest`/`PaymentNotificationConsumerTest`
+  (ignore other event types, tolerate unknown JSON fields), minus any
+  `OrderClient`/`CustomerClient` mock — this consumer needs neither (see
+  `CustomerWelcomeConsumer`'s own Javadoc).
 
 ## §12 — Build phases
 
@@ -243,7 +259,7 @@ The plan's own 5-phase rollout sequence, and where each stands:
 
 1. **Scaffold + one channel, one event type** — ✅ Done. Email, `OrderConfirmed` only, proved the skeleton end to end.
 2. **Preferences + opt-out, before more event types** — 🟡 Partial. Signed unsubscribe token done; per-type enforcement still a placeholder pending legal sign-off.
-3. **Remaining event types on email** — 🟡 Partial. `OrderCancelled`, `PaymentConfirmed`, `PaymentFailed` done. Shipment lifecycle events and `CustomerWelcome` still open, blocked on other services' event shapes.
+3. **Remaining event types on email** — 🟡 Partial. `OrderCancelled`, `PaymentConfirmed`, `PaymentFailed`, `CustomerWelcome` done. Shipment lifecycle events still open, blocked on `shipment-service`'s event shape.
 4. **Additional channels (SMS, push)** — 🟡 Partial. SMS fully done (`TwilioSmsProvider`, templates, multi-channel fan-out in `NotificationServiceImpl`). Push not started — blocked on a `customer-service` schema change (no push-token field exists yet).
 5. **Infra parity** — ⬜ Not started. No k8s manifests, no Prometheus scrape target, no Grafana dashboard.
 
@@ -264,7 +280,7 @@ The plan's own 5-phase rollout sequence, and where each stands:
 | 9 | API surface | ✅ Done |
 | 10 | Observability | 🟡 Partial |
 | 11 | Testing strategy | 🟡 Partial |
-| 12 | Build phases | 🟡 Partial (2 of 5 phases fully closed) |
+| 12 | Build phases | 🟡 Partial (1 of 5 phases fully closed) |
 
 **The single most consequential open item** is §6's scheduled retry/DLQ —
 every other gap here is either a deferred phase (push, infra) or a
