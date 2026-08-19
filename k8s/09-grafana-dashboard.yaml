@@ -1,0 +1,620 @@
+# Auto-imports the notification-service Overview dashboard into Grafana —
+# same mechanism as every other service's own k8s/*-grafana-dashboard.yaml
+# in this system (Prometheus Operator + kube-prometheus-stack's Grafana
+# dashboard sidecar).
+#
+# Commented out of kustomization.yaml by default, same reasoning as
+# 08-podmonitor.yaml: depends on that external chart being installed
+# first.
+#
+# IMPORTANT GAP, flagged rather than papered over: this service has no
+# custom Micrometer instrumentation yet (no NotificationMetrics class, the
+# equivalent of customer-service/oms-main's OutboxMetrics). That means the
+# panels the original plan's §10 explicitly asked for — "notifications
+# sent/failed by channel and type", "retry-queue depth", and the
+# notification-specific "time-to-delivery" metric — are NOT in this
+# dashboard, because there's no Prometheus series backing any of them yet.
+# Every panel below uses only what Spring Boot Actuator already exposes
+# automatically (HTTP, JVM, DB pool, Kafka consumer lag). Retry-queue depth
+# specifically IS visible to KEDA (06-scaledobject-worker.yaml's postgresql
+# trigger queries it directly), just not to Grafana/Prometheus — closing
+# that for real means adding a NotificationMetrics class with gauges/counters
+# instrumented from NotificationServiceImpl#sendAndRecord and
+# NotificationRetryScheduler, which is new application code, not an infra
+# change, so it's out of scope for this file.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: notification-service-grafana-dashboard
+  labels:
+    app.kubernetes.io/name: notification-service
+    grafana_dashboard: '1'
+data:
+  notification-service-overview.json: |
+    {
+      "id": null,
+      "uid": "notification-service-overview",
+      "title": "notification-service Overview",
+      "description": "notification-service: web/worker split via the `role` tag, HTTP traffic, Kafka consumer lag, JVM, and DB pool. Generated to match the metrics already exposed at /actuator/prometheus. Companion to oms-overview.json/customer-service-overview.json/product-service-overview.json, not a replacement \u2014 filtered by application=\"notification-service\" throughout. Deliberately does NOT include notification-specific business metrics (sent/failed by channel/type, time-to-delivery, retry-queue depth) \u2014 no NotificationMetrics class exists yet to back them; see this file's own top-of-file comment.",
+      "tags": [
+        "oms",
+        "notification-service"
+      ],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "version": 1,
+      "refresh": "30s",
+      "time": {
+        "from": "now-1h",
+        "to": "now"
+      },
+      "panels": [
+        {
+          "id": 1,
+          "title": "Overview",
+          "type": "row",
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 0
+          },
+          "collapsed": false,
+          "panels": []
+        },
+        {
+          "id": 2,
+          "title": "Web instances up",
+          "type": "stat",
+          "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 0,
+            "y": 1
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum(up{job=\"notification-service\", app_kubernetes_io_component=\"web\"})",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            }
+          }
+        },
+        {
+          "id": 3,
+          "title": "Worker instances up",
+          "type": "stat",
+          "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 4,
+            "y": 1
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum(up{job=\"notification-service\", app_kubernetes_io_component=\"worker\"})",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            }
+          }
+        },
+        {
+          "id": 4,
+          "title": "Request rate (5m)",
+          "type": "stat",
+          "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 8,
+            "y": 1
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum(rate(http_server_requests_seconds_count{application=\"notification-service\"}[5m]))",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps"
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            }
+          }
+        },
+        {
+          "id": 5,
+          "title": "Error rate (5xx, 5m)",
+          "type": "stat",
+          "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 12,
+            "y": 1
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum(rate(http_server_requests_seconds_count{application=\"notification-service\", status=~\"5..\"}[5m]))",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "red", "value": 0.1 }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            }
+          }
+        },
+        {
+          "id": 6,
+          "title": "Max Kafka consumer lag",
+          "type": "stat",
+          "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 16,
+            "y": 1
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "max(kafka_consumer_fetch_manager_records_lag_max{application=\"notification-service\"})",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 100 },
+                  { "color": "red", "value": 500 }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            }
+          }
+        },
+        {
+          "id": 7,
+          "title": "JVM heap used",
+          "type": "stat",
+          "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 20,
+            "y": 1
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum(jvm_memory_used_bytes{application=\"notification-service\",area=\"heap\"})",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes"
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            }
+          }
+        },
+        {
+          "id": 8,
+          "title": "HTTP",
+          "type": "row",
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 5
+          },
+          "collapsed": false,
+          "panels": []
+        },
+        {
+          "id": 9,
+          "title": "Request rate by status",
+          "type": "timeseries",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 6
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum(rate(http_server_requests_seconds_count{application=\"notification-service\"}[5m])) by (status)",
+              "legendFormat": "{{status}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 15,
+                "pointSize": 4,
+                "stacking": {
+                  "mode": "normal"
+                }
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          }
+        },
+        {
+          "id": 10,
+          "title": "Latency (p50 / p95 / p99)",
+          "type": "timeseries",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 6
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "histogram_quantile(0.50, sum(rate(http_server_requests_seconds_bucket{application=\"notification-service\"}[5m])) by (le))",
+              "legendFormat": "p50",
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket{application=\"notification-service\"}[5m])) by (le))",
+              "legendFormat": "p95",
+              "refId": "B"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "histogram_quantile(0.99, sum(rate(http_server_requests_seconds_bucket{application=\"notification-service\"}[5m])) by (le))",
+              "legendFormat": "p99",
+              "refId": "C"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 15,
+                "pointSize": 4
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          }
+        },
+        {
+          "id": 11,
+          "title": "Kafka",
+          "type": "row",
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 14
+          },
+          "collapsed": false,
+          "panels": []
+        },
+        {
+          "id": 12,
+          "title": "Consumer lag by client",
+          "type": "timeseries",
+          "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 15
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "kafka_consumer_fetch_manager_records_lag_max{application=\"notification-service\"}",
+              "legendFormat": "{{client_id}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 15,
+                "pointSize": 4
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          }
+        },
+        {
+          "id": 13,
+          "title": "JVM & DB pool",
+          "type": "row",
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 23
+          },
+          "collapsed": false,
+          "panels": []
+        },
+        {
+          "id": 14,
+          "title": "Heap used vs max",
+          "type": "timeseries",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 24
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum(jvm_memory_used_bytes{application=\"notification-service\",area=\"heap\"})",
+              "legendFormat": "used",
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum(jvm_memory_max_bytes{application=\"notification-service\",area=\"heap\"})",
+              "legendFormat": "max",
+              "refId": "B"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes",
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 15,
+                "pointSize": 4
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          }
+        },
+        {
+          "id": 15,
+          "title": "HikariCP: active / idle / pending connections",
+          "type": "timeseries",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 24
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum(hikaricp_connections_active{application=\"notification-service\"})",
+              "legendFormat": "active",
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum(hikaricp_connections_idle{application=\"notification-service\"})",
+              "legendFormat": "idle",
+              "refId": "B"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum(hikaricp_connections_pending{application=\"notification-service\"})",
+              "legendFormat": "pending",
+              "refId": "C"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 15,
+                "pointSize": 4
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          }
+        }
+      ]
+    }

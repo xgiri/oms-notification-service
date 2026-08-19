@@ -1,0 +1,89 @@
+# Requires KEDA (https://keda.sh) installed in the cluster. Same reasoning
+# as oms-main's own 07-scaledobject-worker.yaml: scales the worker on
+# consumer lag / queue depth, not CPU, since neither is something this
+# service exposes as a Prometheus metric today (no custom
+# NotificationMetrics class exists yet — see 09-grafana-dashboard.yaml's
+# own note on this same gap) — KEDA's kafka and postgresql scalers read
+# both directly, so no app-side metrics work is needed to wire this up.
+#
+# Four triggers, OR'd together (KEDA takes the max replica count any
+# trigger asks for): one per Kafka consumer group used by the 3
+# @KafkaListener consumers, plus one for the notifications table's FAILED
+# backlog (NotificationRetryScheduler's own queue).
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: notification-service-pg-auth
+spec:
+  secretTargetRef:
+    - parameter: connection
+      name: notification-service-secrets
+      key: NOTIFICATION_PG_CONNECTION
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: notification-service-worker
+  labels:
+    app.kubernetes.io/name: notification-service
+    app.kubernetes.io/component: worker
+spec:
+  scaleTargetRef:
+    name: notification-service-worker
+  # Never scale to zero — see the replicas: 1 comment in
+  # 05-deployment-worker.yaml for why (someone has to consume events and
+  # drain the retry queue).
+  minReplicaCount: 1
+  maxReplicaCount: 6
+  pollingInterval: 15    # how often KEDA checks lag/queue depth, seconds
+  cooldownPeriod: 300    # wait this long after the last high reading before scaling back down
+  triggers:
+    # spring.kafka.consumer.group-id default — OrderNotificationConsumer
+    # (OrderConfirmed/OrderCancelled).
+    - type: kafka
+      metadata:
+        bootstrapServers: kafka:9092
+        consumerGroup: oms-notification-service
+        topic: oms.order.events
+        # Scale-up trigger: total lag across partitions, divided by this,
+        # rounds up to the replica count KEDA asks for. Tune against real
+        # throughput/partition count rather than trusting this starting
+        # value.
+        lagThreshold: "50"
+        offsetResetPolicy: earliest
+    # app.kafka.consumer.payment-group-id — PaymentNotificationConsumer
+    # (PaymentConfirmed/PaymentFailed). Own consumer group on the SAME
+    # topic as the trigger above — see application.properties' own
+    # comment on why a shared group-id would silently starve this
+    # consumer of partitions.
+    - type: kafka
+      metadata:
+        bootstrapServers: kafka:9092
+        consumerGroup: oms-notification-service-payment
+        topic: oms.order.events
+        lagThreshold: "50"
+        offsetResetPolicy: earliest
+    # app.kafka.consumer.customer-group-id — CustomerWelcomeConsumer, on
+    # the separate oms.customer.events topic.
+    - type: kafka
+      metadata:
+        bootstrapServers: kafka:9092
+        consumerGroup: oms-notification-service-customer
+        topic: oms.customer.events
+        lagThreshold: "50"
+        offsetResetPolicy: earliest
+    # FAILED-notification backlog — mirrors NotificationRetryScheduler's
+    # own query shape (status = 'FAILED', see
+    # idx_notifications_status in V1__create_notifications_table.sql).
+    # targetQueryValue is "FAILED rows per replica" — e.g. 100 FAILED rows
+    # asks KEDA for 2 replicas. This is a genuinely different signal from
+    # the 3 Kafka triggers above: a burst of FAILED rows can happen with
+    # zero consumer lag (a provider outage, not an ingestion problem), so
+    # without this trigger the worker would never scale up specifically to
+    # drain a retry backlog faster.
+    - type: postgresql
+      metadata:
+        query: "SELECT COUNT(*) FROM notifications WHERE status = 'FAILED'"
+        targetQueryValue: "100"
+      authenticationRef:
+        name: notification-service-pg-auth

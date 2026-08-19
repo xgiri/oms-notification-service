@@ -1,0 +1,28 @@
+# Only the web Deployment gets a Service — the worker deliberately has
+# none, same reasoning as oms-main's own 03-service-web.yaml: nothing
+# should ever route HTTP traffic to it, even though Tomcat is still
+# listening there too.
+#
+# ClusterIP — external routing is oms-gateway's job. This Service is only
+# for in-cluster callers: oms-gateway routing to it if/when notification
+# history or preference endpoints are ever exposed externally (not done as
+# of this manifest — see this repo's README for the current API surface),
+# and nothing else in OMS calls INTO this service today (see this repo's
+# README "Scope" section: pure consumer-first, no NotificationClient
+# anywhere).
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification-service
+  labels:
+    app.kubernetes.io/name: notification-service
+    app.kubernetes.io/component: web
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: notification-service
+    app.kubernetes.io/component: web
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

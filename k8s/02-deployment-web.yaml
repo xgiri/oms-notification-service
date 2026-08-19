@@ -1,0 +1,110 @@
+# Same image as the worker Deployment — only APP_PROCESS_ROLE differs, same
+# split oms-main's own web/worker pair demonstrates. Web serves the REST
+# API (notification.controller); it does NOT run the 3 @KafkaListener
+# consumers or NotificationRetryScheduler — see each of those classes' own
+# @ConditionalOnProperty(name = "app.process.role", havingValue = "worker",
+# matchIfMissing = true) guard, and see 05-deployment-worker.yaml for the
+# role that does run them.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-service-web
+  labels:
+    app.kubernetes.io/name: notification-service
+    app.kubernetes.io/component: web
+spec:
+  # Baseline replica count — 04-hpa-web.yaml takes over from here. Keep in
+  # sync with the HPA's minReplicas.
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: notification-service
+      app.kubernetes.io/component: web
+  strategy:
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: notification-service
+        app.kubernetes.io/component: web
+      annotations:
+        # For plain (non-Operator) Prometheus using annotation-based pod
+        # discovery — same convention as every other service in this
+        # system. Redundant but harmless if you use 08-podmonitor.yaml
+        # (Prometheus Operator) instead.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8081"
+        prometheus.io/path: "/actuator/prometheus"
+    spec:
+      # No serviceAccountName override — no Vault integration yet (see
+      # 00-configmap.yaml's note), so there's no Kubernetes-auth role to
+      # bind a dedicated ServiceAccount to.
+      terminationGracePeriodSeconds: 45
+      containers:
+        - name: notification-service
+          # Replace with your real registry/tag, or wire this up via
+          # `kustomize edit set image` / a CI pipeline step. Same image
+          # that runs both the web and worker roles — only
+          # APP_PROCESS_ROLE differs.
+          image: your-registry.example.com/notification-service:REPLACE_ME
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+            # management.server.port in application.properties — actuator
+            # (health, info, prometheus) lives here, not on 8080. Not part
+            # of 03-service-web.yaml's port list, so nothing external can
+            # ever reach it; only reachable in-cluster (Prometheus
+            # scraping the pod directly, or the probes below hitting
+            # localhost).
+            - name: metrics
+              containerPort: 8081
+          envFrom:
+            - configMapRef:
+                name: notification-service-config
+            - secretRef:
+                name: notification-service-secrets
+          env:
+            # The one thing that makes this the web role instead of
+            # worker — stops the 3 @KafkaListener consumers and
+            # NotificationRetryScheduler from starting; Tomcat/HTTP stays
+            # up. See each of those classes' own @ConditionalOnProperty.
+            - name: APP_PROCESS_ROLE
+              value: "web"
+          startupProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: metrics
+            periodSeconds: 5
+            failureThreshold: 18   # ~90s ceiling for a cold start (Flyway migrations, JVM warmup)
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: metrics
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: metrics
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            # Starting point — the web role's load is HTTP traffic
+            # (delivery-history queries, preference/unsubscribe endpoints),
+            # comparable shape to customer-service's own Deployment. Tune
+            # from real numbers once this is running.
+            requests:
+              cpu: 100m
+              memory: 384Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false

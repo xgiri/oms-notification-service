@@ -1,0 +1,33 @@
+# Optional — only applies if you run Prometheus Operator (i.e. the
+# monitoring.coreos.com/v1 CRDs are installed). If you're using plain
+# Prometheus with annotation-based discovery instead, the
+# prometheus.io/scrape annotations already on both Deployments' pod
+# templates cover it and this file isn't needed.
+#
+# PodMonitor rather than ServiceMonitor because the worker Deployment has
+# no Service (see 05-deployment-worker.yaml) for a ServiceMonitor to
+# attach to — PodMonitor selects pods directly by label, so one definition
+# covers both web and worker, same reasoning as oms-main's own
+# 09-podmonitor.yaml.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: notification-service
+  labels:
+    app.kubernetes.io/name: notification-service
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: notification-service
+  # Propagates the pod's own component label (web/worker) onto every
+  # series scraped from it, INCLUDING the synthetic `up` metric — `up`
+  # itself carries no Micrometer tags (unlike http_server_requests_seconds_*,
+  # jvm_*, etc., which already carry management.metrics.tags.role from
+  # application.properties), so without this, 09-grafana-dashboard.yaml's
+  # "Instances up" panels couldn't tell a web replica from a worker one.
+  podTargetLabels:
+    - app.kubernetes.io/component
+  podMetricsEndpoints:
+    - port: metrics   # matches the "metrics" containerPort (8081) on both Deployments
+      path: /actuator/prometheus
+      interval: 30s

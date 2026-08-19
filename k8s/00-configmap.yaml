@@ -1,0 +1,72 @@
+# Non-secret config shared by both the web and worker Deployments — same
+# split between ConfigMap (this file) and Secret (01-secret.example.yaml)
+# as customer-service's own k8s/00-configmap.yaml. APP_PROCESS_ROLE is
+# deliberately NOT here, same reasoning as oms-main's ConfigMap: it's the
+# one thing that must differ between the two roles, so it's set directly on
+# each Deployment (see 02-deployment-web.yaml / 05-deployment-worker.yaml)
+# instead.
+#
+# No Vault entries here (VAULT_ADDR/VAULT_KUBERNETES_ROLE, as oms-main's
+# ConfigMap has) — this service has no Vault integration, matching
+# customer-service/product-service's own deliberate Stage-1 deferral (see
+# this repo's application.properties comment on app.notification.sms.*).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: notification-service-config
+  labels:
+    app.kubernetes.io/name: notification-service
+data:
+  SPRING_PROFILES_ACTIVE: "prod"
+
+  DB_HOST: "notification-db"    # replace with your managed Postgres host/Service name — this service's OWN database, not oms-main's
+  DB_PORT: "5432"
+  DB_NAME: "notification_service"
+
+  # Same INTERNAL-listener reasoning as every other service's own
+  # ConfigMap in this system — must resolve from inside the cluster, not
+  # localhost.
+  KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+
+  # oms-main's own in-cluster Service name/port — this service only ever
+  # VERIFIES a token against this (see security.SecurityConfig) for its
+  # JWT-authenticated endpoints, it never calls back to oms-main for
+  # anything else. Replace the host if oms-main isn't named oms-web in
+  # your cluster, or if it lives in a different namespace.
+  AUTH_SERVICE_JWKS_URI: "http://oms-web:8080/.well-known/jwks.json"
+
+  # customer-service's own in-cluster Service name/port — CustomerClient's
+  # base URL. Replace if customer-service's k8s Service is named
+  # differently or lives in a different namespace.
+  CUSTOMER_SERVICE_URL: "http://customer-service:8080/api/v1"
+
+  # oms-main's own in-cluster Service name/port — OrderClient's base URL.
+  # Same host as AUTH_SERVICE_JWKS_URI above (both point at oms-web), kept
+  # as a separate key since the two are conceptually different clients
+  # (auth verification vs. order lookups) even though they resolve to the
+  # same Service today.
+  ORDER_SERVICE_BASE_URL: "http://oms-web:8080/api/v1"
+
+  # Real SMTP relay for prod — Mailpit (docker-compose.snippet.yml) is
+  # local-dev-only, never referenced here. Replace with your actual relay
+  # host; SMTP_USERNAME/SMTP_PASSWORD/SMTP_AUTH/SMTP_STARTTLS belong in
+  # 01-secret.example.yaml / this ConfigMap respectively depending on
+  # whether your relay needs auth at all — see application.properties'
+  # own spring.mail.* defaults.
+  SMTP_HOST: "smtp.example.com"
+  SMTP_PORT: "587"
+  SMTP_AUTH: "true"
+  SMTP_STARTTLS: "true"
+
+  # Same Tempo collector every other service in this system exports to —
+  # see application.properties for why both sides need to agree on this
+  # for a trace to show up as one continuous span across services.
+  OTLP_TRACING_ENDPOINT: "http://tempo:4318/v1/traces"
+
+  # NotificationRetryScheduler (see application.properties' own comment on
+  # why these are env-overridable) — sane defaults ship in-app, these exist
+  # so they can be tuned per-environment without a rebuild once real
+  # failure data exists.
+  NOTIFICATION_RETRY_POLL_INTERVAL_MS: "60000"
+  NOTIFICATION_RETRY_BATCH_SIZE: "50"
+  NOTIFICATION_RETRY_MAX_ATTEMPTS: "5"

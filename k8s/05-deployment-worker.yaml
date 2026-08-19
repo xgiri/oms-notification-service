@@ -1,0 +1,95 @@
+# Same image, same code as notification-service-web — only APP_PROCESS_ROLE
+# differs, exactly like oms-main's own web/worker pair. Runs the 3
+# @KafkaListener consumers (OrderNotificationConsumer,
+# PaymentNotificationConsumer, CustomerWelcomeConsumer) and
+# NotificationRetryScheduler. No Service is defined for this Deployment
+# anywhere in this directory, and none should be — nothing should route
+# HTTP traffic here even though Tomcat is still listening (same reasoning
+# as oms-main's own 06-deployment-worker.yaml).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-service-worker
+  labels:
+    app.kubernetes.io/name: notification-service
+    app.kubernetes.io/component: worker
+spec:
+  # 06-scaledobject-worker.yaml (KEDA) owns scaling from here once it's
+  # installed and applied — this is just the floor if KEDA is ever absent
+  # or paused: never zero, since some worker must always be up to consume
+  # order/payment/customer events and run the retry scheduler (a FAILED
+  # notification just accumulates otherwise — see NotificationRetryScheduler's
+  # own Javadoc).
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: notification-service
+      app.kubernetes.io/component: worker
+  strategy:
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: notification-service
+        app.kubernetes.io/component: worker
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8081"
+        prometheus.io/path: "/actuator/prometheus"
+    spec:
+      terminationGracePeriodSeconds: 45
+      containers:
+        - name: notification-service
+          image: your-registry.example.com/notification-service:REPLACE_ME
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+            # Same management port as the web Deployment (see that file's
+            # comment) — nothing routes it externally here either, since
+            # this Deployment has no Service at all. Prometheus reaches it
+            # by scraping the pod directly.
+            - name: metrics
+              containerPort: 8081
+          envFrom:
+            - configMapRef:
+                name: notification-service-config
+            - secretRef:
+                name: notification-service-secrets
+          env:
+            - name: APP_PROCESS_ROLE
+              value: "worker"
+          startupProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: metrics
+            periodSeconds: 5
+            failureThreshold: 18
+          # No readinessProbe gating traffic here on purpose, same
+          # reasoning as oms-main's own worker Deployment — there's no
+          # Service/endpoint list for this Deployment to gate. Liveness
+          # still protects against a wedged JVM.
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: metrics
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            # Worker load is consumer throughput + retry-batch processing,
+            # not request concurrency — start smaller than web and tune
+            # against real batch-size/poll-interval numbers
+            # (app.notification.retry.batch-size/poll-interval-ms).
+            requests:
+              cpu: 150m
+              memory: 384Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false

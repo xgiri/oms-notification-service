@@ -48,6 +48,14 @@
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       SMTP_HOST: mailpit
       SMTP_PORT: "1025"
+      # TWILIO_* — required, no safe default (see TwilioConfig's own
+      # Javadoc). Real (test-mode) Twilio credentials needed to exercise
+      # TwilioSmsProvider locally end to end; there's no local SMS-catcher
+      # equivalent to Mailpit. See this repo's README "Running locally"
+      # section.
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:?TWILIO_ACCOUNT_SID is required}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:?TWILIO_AUTH_TOKEN is required}
+      TWILIO_FROM_NUMBER: ${TWILIO_FROM_NUMBER:?TWILIO_FROM_NUMBER is required}
       ORDER_SERVICE_BASE_URL: http://app:8080/api/v1
       AUTH_SERVICE_JWKS_URI: http://app:8080/.well-known/jwks.json
       CUSTOMER_SERVICE_URL: http://customer-service:8083/api/v1

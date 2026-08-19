@@ -1,0 +1,35 @@
+# Protects both roles from node drains/upgrades taking out all replicas at
+# once — same reasoning as oms-main's own 08-pdb.yaml.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: notification-service-web
+  labels:
+    app.kubernetes.io/name: notification-service
+    app.kubernetes.io/component: web
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: notification-service
+      app.kubernetes.io/component: web
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: notification-service-worker
+  labels:
+    app.kubernetes.io/name: notification-service
+    app.kubernetes.io/component: worker
+spec:
+  # minAvailable: 0 would defeat the point when minReplicaCount is only 1
+  # (see 05-deployment-worker.yaml / 06-scaledobject-worker.yaml) —
+  # a drain could legally take the only worker out. maxUnavailable: 1
+  # instead lets a drain proceed one pod at a time without ever going to
+  # zero workers when replicas >= 2, and still permits it (unavoidably) at
+  # replicas: 1 — same trade-off oms-main's own worker PDB documents.
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: notification-service
+      app.kubernetes.io/component: worker

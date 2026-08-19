@@ -1,0 +1,36 @@
+# CPU-based HPA — works out of the box with just metrics-server, same
+# pragmatic default as oms-main's own 05-hpa-web.yaml. Request-rate-based
+# scaling is available as an upgrade path the same way it is there
+# (/actuator/prometheus is exposed, http.server.requests carries a
+# percentile histogram per application.properties'
+# management.metrics.distribution.percentiles-histogram — but nothing in
+# this repo enables percentiles-histogram specifically for that metric key,
+# so double-check before wiring a request-rate HPA off it) — not
+# implemented here for the same reason as oms-main's: it needs a target
+# RPS/latency decision this repo can't make for you.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: notification-service-web
+  labels:
+    app.kubernetes.io/name: notification-service
+    app.kubernetes.io/component: web
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: notification-service-web
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+    scaleUp:
+      stabilizationWindowSeconds: 0

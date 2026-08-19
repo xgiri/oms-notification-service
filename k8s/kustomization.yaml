@@ -1,0 +1,28 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: oms-core
+
+resources:
+  - 00-configmap.yaml
+  # 01-secret.example.yaml is intentionally NOT listed here — copy it,
+  # fill in real values, and either apply the copy separately or list your
+  # copy here instead. Never let real secrets ride through this directory
+  # as-is.
+  - 02-deployment-web.yaml
+  - 03-service-web.yaml
+  - 04-hpa-web.yaml
+  - 05-deployment-worker.yaml
+  - 06-scaledobject-worker.yaml   # requires KEDA CRDs installed in-cluster
+  - 07-pdb.yaml
+  # - 08-podmonitor.yaml          # requires Prometheus Operator CRDs — uncomment if you run it
+  # - 09-grafana-dashboard.yaml   # requires kube-prometheus-stack's Grafana sidecar — uncomment if you run it
+
+# Convenience for CI: `kustomize edit set image notification-service=your-registry/notification-service:$GIT_SHA`
+# rewrites the image on both Deployments in one shot, same tag on both,
+# same guarantee docker-compose.snippet.yml gives locally (both roles
+# build from the same Dockerfile/image, only APP_PROCESS_ROLE differs).
+images:
+  - name: your-registry.example.com/notification-service
+    newName: your-registry.example.com/notification-service
+    newTag: REPLACE_ME
