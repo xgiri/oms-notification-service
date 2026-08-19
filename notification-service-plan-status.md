@@ -1,8 +1,9 @@
 # notification-service — Build Plan & Status
 
 This maps every one of the 12 sections from the original notification-service
-plan to what's actually been built, as of Phase 4 (SMS) plus the newly
-added `CustomerWelcome` consumer (Phase 3's last email-channel event type).
+plan to what's actually been built, as of Phase 4 (SMS), the
+`CustomerWelcome` consumer, the `CustomerClient`/`OrderClient` contract
+tests, and the §6 retry/DLQ scheduler.
 Status tags: **✅ Done**, **🟡 Partial**, **⬜ Not started**.
 
 ---
@@ -17,11 +18,14 @@ source of truth (reads from customer-service), or the channel
 infrastructure itself (delegates to providers). Designed as a pure
 consumer-first service — nothing else in OMS calls *into* it synchronously.
 
-**Status: 🟡 Partial**
+**Status: ✅ Done**
 - ✅ Composing/delivering, delivery history, unsubscribe/opt-out state
 - ✅ No `NotificationClient` needed anywhere else in OMS — holds as designed
-- ⬜ Provider fallback and the scheduled retry/DLQ piece of "retry" aren't
-  built yet (see §6)
+- ✅ Retry — both the in-call resilience4j piece and the scheduled
+  retry/DLQ piece (`NotificationRetryScheduler`) are now built (see §6)
+- ⬜ Provider fallback isn't built — but that's a deliberate deferral per
+  the plan's own §6 guidance ("don't build fallback logic before that's
+  actually decided"), not a gap
 
 ## §2 — Event consumption: what triggers a notification
 
@@ -110,15 +114,35 @@ retry/DLT (which is for message-processing failures, not downstream-send
 failures). Provider fallback (email → SMS on failure) explicitly flagged
 as a product decision to make later, not to build speculatively.
 
-**Status: 🟡 Partial — this is the clearest open gap**
+**Status: ✅ Done**
 - ✅ In-call resilience4j retry — done for both providers, including the
   permanent-vs-transient classification for `TwilioSmsProvider` (a bad
   phone number doesn't retry; a 5xx/429 does)
-- ⬜ **The scheduled retry/DLQ piece isn't built.** A `FAILED` notification
-  today has no independent retrier — this was flagged explicitly as a gap
-  early in Phase 4 and hasn't been picked up since
+- ✅ **The scheduled retry/DLQ piece is now built** —
+  `NotificationRetryScheduler`, same `FOR UPDATE SKIP LOCKED` /
+  whole-batch-in-one-transaction shape as `OutboxPublisher`
+  (customer-service/oms-main). Polls `FAILED` rows, reuses
+  `NotificationService#resend`'s existing compose-send-record logic rather
+  than duplicating it, and transitions a row to `DEAD_LETTERED` once its
+  `retry_count` reaches a configurable `max-attempts` (default 5). Kafka's
+  own retry/DLT deliberately stays out of this — this scheduler exists
+  specifically so a provider outage doesn't turn into indefinite Kafka
+  message redelivery for every event type sharing that partition. Built
+  against — and verified compatible with — this service's source as of
+  the `CustomerWelcome`/contract-test/`ApiException`-fix work above; no
+  conflicts with any of it (`Notification`, `NotificationStatus`, and the
+  V1 migration were all untouched by that work)
 - ✅ Provider fallback correctly *not* built — matches the plan's own
   "don't over-engineer this speculatively" guidance
+- ⚠️ **Separate, pre-existing bug, found (not fixed) while wiring this
+  up:** `NotificationService#resend`'s own Javadoc states it's "only valid
+  from FAILED or DEAD_LETTERED," but the implementation doesn't actually
+  enforce that precondition; it'll attempt a resend on a `SENT` or
+  `PENDING` row too if called directly via the API. Doesn't affect the new
+  scheduler (it only ever calls `resend` on rows it already confirmed are
+  `FAILED`), but it's a real gap in the public `POST /resend` endpoint's
+  own guarantees — left unfixed since it's a separate decision from what
+  was in scope here
 
 ## §7 — Preferences & compliance
 
@@ -269,12 +293,12 @@ The plan's own 5-phase rollout sequence, and where each stands:
 
 | # | Section | Status |
 |---|---|---|
-| 1 | Scope | 🟡 Partial |
+| 1 | Scope | ✅ Done |
 | 2 | Event consumption | 🟡 Partial |
 | 3 | Recipient resolution | ✅ Done |
 | 4 | Composition | ✅ Done |
 | 5 | Provider abstraction | 🟡 Partial |
-| 6 | Delivery reliability | 🟡 Partial |
+| 6 | Delivery reliability | ✅ Done |
 | 7 | Preferences & compliance | 🟡 Partial |
 | 8 | Data model | ✅ Done |
 | 9 | API surface | ✅ Done |
@@ -282,9 +306,18 @@ The plan's own 5-phase rollout sequence, and where each stands:
 | 11 | Testing strategy | 🟡 Partial |
 | 12 | Build phases | 🟡 Partial (1 of 5 phases fully closed) |
 
-**The single most consequential open item** is §6's scheduled retry/DLQ —
-every other gap here is either a deferred phase (push, infra) or a
-placeholder pending an external decision (legal sign-off on opt-out). The
-retry/DLQ gap is different: it's inside Phase 1's own scope and means a
-`FAILED` notification today has no path back to `SENT` without a human
-manually hitting `POST /resend`.
+**§6's retry/DLQ gap is now closed** — `NotificationRetryScheduler` polls
+`FAILED` notifications and either retries them (via the existing `resend`
+logic) or dead-letters them once `retry_count` hits the configurable
+`max-attempts`, same `FOR UPDATE SKIP LOCKED` shape as `OutboxPublisher`.
+
+**What's newly the most consequential open item:** §5's missing push
+provider (blocks closing Phase 4) and §10's missing Prometheus/Grafana
+dashboard (Phase 5) are both deferred-phase gaps, not urgent. The one
+worth flagging instead: §6 itself surfaced a **separate, pre-existing
+bug** while being built — `NotificationService#resend`'s Javadoc claims
+it only works from `FAILED`/`DEAD_LETTERED`, but the code doesn't enforce
+that. It doesn't affect the new scheduler (which only ever calls `resend`
+on rows it already confirmed are `FAILED`), but the public
+`POST /notifications/{id}/resend` endpoint currently doesn't guarantee
+what its own docs say it does.
