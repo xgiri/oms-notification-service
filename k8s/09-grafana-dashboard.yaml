@@ -7,21 +7,21 @@
 # 08-podmonitor.yaml: depends on that external chart being installed
 # first.
 #
-# IMPORTANT GAP, flagged rather than papered over: this service has no
-# custom Micrometer instrumentation yet (no NotificationMetrics class, the
-# equivalent of customer-service/oms-main's OutboxMetrics). That means the
-# panels the original plan's §10 explicitly asked for — "notifications
-# sent/failed by channel and type", "retry-queue depth", and the
-# notification-specific "time-to-delivery" metric — are NOT in this
-# dashboard, because there's no Prometheus series backing any of them yet.
-# Every panel below uses only what Spring Boot Actuator already exposes
-# automatically (HTTP, JVM, DB pool, Kafka consumer lag). Retry-queue depth
-# specifically IS visible to KEDA (06-scaledobject-worker.yaml's postgresql
-# trigger queries it directly), just not to Grafana/Prometheus — closing
-# that for real means adding a NotificationMetrics class with gauges/counters
-# instrumented from NotificationServiceImpl#sendAndRecord and
-# NotificationRetryScheduler, which is new application code, not an infra
-# change, so it's out of scope for this file.
+# The "Notifications" row (sent/failed/dead-lettered by channel and type,
+# retry-queue depth, provider send-duration percentiles) is backed by
+# NotificationMetrics — see that class's own Javadoc for exactly which
+# meter names/tags it registers and why. One thing still NOT here: a
+# time-to-delivery panel (event received -> notification sent). That
+# needs the event's own receipt time threaded through
+# NotificationService#processEvent's signature from each
+# @KafkaListener's ConsumerRecord#timestamp() — a public-interface change
+# touching all 3 consumers and their tests, deliberately left as a
+# separate follow-up rather than folded into NotificationMetrics itself.
+# Retry-queue depth (notifications_pending_failed) is ALSO visible to
+# KEDA directly (06-scaledobject-worker.yaml's own postgresql trigger
+# queries the same FAILED count independently) — same number, two
+# different consumers, same reasoning as OutboxMetrics' own pending gauge
+# in customer-service/oms-main.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -35,7 +35,7 @@ data:
       "id": null,
       "uid": "notification-service-overview",
       "title": "notification-service Overview",
-      "description": "notification-service: web/worker split via the `role` tag, HTTP traffic, Kafka consumer lag, JVM, and DB pool. Generated to match the metrics already exposed at /actuator/prometheus. Companion to oms-overview.json/customer-service-overview.json/product-service-overview.json, not a replacement \u2014 filtered by application=\"notification-service\" throughout. Deliberately does NOT include notification-specific business metrics (sent/failed by channel/type, time-to-delivery, retry-queue depth) \u2014 no NotificationMetrics class exists yet to back them; see this file's own top-of-file comment.",
+      "description": "notification-service: web/worker split via the `role` tag, HTTP traffic, notification send/failure/dead-letter outcomes by channel and type, retry-queue depth, provider send latency, Kafka consumer lag, JVM, and DB pool. Generated to match the metrics already exposed at /actuator/prometheus \u2014 see application.properties and NotificationMetrics.java. Companion to oms-overview.json/customer-service-overview.json/product-service-overview.json, not a replacement \u2014 filtered by application=\"notification-service\" throughout. Does NOT include a time-to-delivery panel (event received \u2192 notification sent) \u2014 that needs the event's own receipt time threaded through NotificationService#processEvent, a public-interface signature change not made as part of NotificationMetrics; see that class's own Javadoc.",
       "tags": [
         "oms",
         "notification-service"
@@ -202,8 +202,14 @@ data:
               "thresholds": {
                 "mode": "absolute",
                 "steps": [
-                  { "color": "green", "value": null },
-                  { "color": "red", "value": 0.1 }
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 0.1
+                  }
                 ]
               }
             },
@@ -246,9 +252,18 @@ data:
               "thresholds": {
                 "mode": "absolute",
                 "steps": [
-                  { "color": "green", "value": null },
-                  { "color": "yellow", "value": 100 },
-                  { "color": "red", "value": 500 }
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "yellow",
+                    "value": 100
+                  },
+                  {
+                    "color": "red",
+                    "value": 500
+                  }
                 ]
               }
             },
@@ -301,6 +316,266 @@ data:
           }
         },
         {
+          "id": 16,
+          "title": "Notifications",
+          "type": "row",
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 5
+          },
+          "collapsed": false,
+          "panels": []
+        },
+        {
+          "id": 17,
+          "title": "Retry queue depth (FAILED)",
+          "type": "stat",
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 0,
+            "y": 6
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "notifications_pending_failed{application=\"notification-service\"}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "yellow",
+                    "value": 50
+                  },
+                  {
+                    "color": "red",
+                    "value": 200
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            }
+          }
+        },
+        {
+          "id": 18,
+          "title": "Sent vs failed vs dead-lettered (5m rate)",
+          "type": "timeseries",
+          "gridPos": {
+            "h": 8,
+            "w": 18,
+            "x": 6,
+            "y": 6
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum(rate(notifications_sent_total{application=\"notification-service\"}[5m]))",
+              "legendFormat": "sent",
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum(rate(notifications_failed_total{application=\"notification-service\"}[5m]))",
+              "legendFormat": "failed",
+              "refId": "B"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum(rate(notifications_dead_lettered_total{application=\"notification-service\"}[5m]))",
+              "legendFormat": "dead-lettered",
+              "refId": "C"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 15,
+                "pointSize": 4
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "dead-lettered"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "red"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          }
+        },
+        {
+          "id": 19,
+          "title": "Sent rate by type",
+          "type": "timeseries",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 14
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum(rate(notifications_sent_total{application=\"notification-service\"}[5m])) by (type, channel)",
+              "legendFormat": "{{type}} ({{channel}})",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 15,
+                "pointSize": 4,
+                "stacking": {
+                  "mode": "normal"
+                }
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          }
+        },
+        {
+          "id": 20,
+          "title": "Send duration (p50 / p95 / p99) by channel",
+          "type": "timeseries",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 14
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "histogram_quantile(0.50, sum(rate(notifications_send_duration_seconds_bucket{application=\"notification-service\"}[5m])) by (le, channel))",
+              "legendFormat": "p50 {{channel}}",
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "histogram_quantile(0.95, sum(rate(notifications_send_duration_seconds_bucket{application=\"notification-service\"}[5m])) by (le, channel))",
+              "legendFormat": "p95 {{channel}}",
+              "refId": "B"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "histogram_quantile(0.99, sum(rate(notifications_send_duration_seconds_bucket{application=\"notification-service\"}[5m])) by (le, channel))",
+              "legendFormat": "p99 {{channel}}",
+              "refId": "C"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 15,
+                "pointSize": 4
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          }
+        },
+        {
           "id": 8,
           "title": "HTTP",
           "type": "row",
@@ -308,7 +583,7 @@ data:
             "h": 1,
             "w": 24,
             "x": 0,
-            "y": 5
+            "y": 22
           },
           "collapsed": false,
           "panels": []
@@ -321,7 +596,7 @@ data:
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 6
+            "y": 23
           },
           "datasource": {
             "type": "prometheus",
@@ -370,7 +645,7 @@ data:
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 6
+            "y": 23
           },
           "datasource": {
             "type": "prometheus",
@@ -434,7 +709,7 @@ data:
             "h": 1,
             "w": 24,
             "x": 0,
-            "y": 14
+            "y": 31
           },
           "collapsed": false,
           "panels": []
@@ -447,7 +722,7 @@ data:
             "h": 8,
             "w": 24,
             "x": 0,
-            "y": 15
+            "y": 32
           },
           "datasource": {
             "type": "prometheus",
@@ -492,7 +767,7 @@ data:
             "h": 1,
             "w": 24,
             "x": 0,
-            "y": 23
+            "y": 40
           },
           "collapsed": false,
           "panels": []
@@ -505,7 +780,7 @@ data:
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 24
+            "y": 41
           },
           "datasource": {
             "type": "prometheus",
@@ -560,7 +835,7 @@ data:
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 24
+            "y": 41
           },
           "datasource": {
             "type": "prometheus",

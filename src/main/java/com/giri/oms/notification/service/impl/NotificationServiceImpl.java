@@ -8,6 +8,7 @@ import com.giri.oms.notification.entity.NotificationStatus;
 import com.giri.oms.notification.entity.NotificationType;
 import com.giri.oms.notification.entity.ProcessedEvent;
 import com.giri.oms.notification.exception.NotificationNotFoundException;
+import com.giri.oms.notification.metrics.NotificationMetrics;
 import com.giri.oms.notification.provider.NotificationProvider;
 import com.giri.oms.notification.provider.NotificationRequest;
 import com.giri.oms.notification.provider.ProviderResult;
@@ -88,6 +89,7 @@ public class NotificationServiceImpl implements NotificationService {
     private final List<NotificationProvider> providers;
     private final UnsubscribeTokenService unsubscribeTokenService;
     private final Clock clock;
+    private final NotificationMetrics notificationMetrics;
 
     @Override
     @Transactional
@@ -173,7 +175,10 @@ public class NotificationServiceImpl implements NotificationService {
         NotificationProvider provider = providerFor(channel);
         NotificationRequest request = composer.compose(type, channel, "en", recipientAddress,
                 withUnsubscribeLink(templateVariables, customerId, type, channel));
+
+        long startNanos = System.nanoTime();
         ProviderResult result = provider.send(request);
+        long durationNanos = System.nanoTime() - startNanos;
 
         Notification notification = new Notification();
         notification.setType(type);
@@ -187,9 +192,11 @@ public class NotificationServiceImpl implements NotificationService {
             notification.setStatus(NotificationStatus.SENT);
             notification.setProviderMessageId(result.providerMessageId());
             notification.setSentAt(LocalDateTime.now(clock));
+            notificationMetrics.recordSent(channel, type, durationNanos);
         } else {
             notification.setStatus(NotificationStatus.FAILED);
             notification.setLastError(result.errorMessage());
+            notificationMetrics.recordFailed(channel, type);
         }
 
         notificationRepository.save(notification);
@@ -251,7 +258,10 @@ public class NotificationServiceImpl implements NotificationService {
                 notification.getType(), notification.getChannel(), "en", notification.getRecipientAddress(),
                 withUnsubscribeLink(templateVariables, notification.getCustomerId(),
                         notification.getType(), notification.getChannel()));
+
+        long startNanos = System.nanoTime();
         ProviderResult result = provider.send(request);
+        long durationNanos = System.nanoTime() - startNanos;
 
         notification.setRetryCount(notification.getRetryCount() + 1);
         if (result.success()) {
@@ -259,8 +269,10 @@ public class NotificationServiceImpl implements NotificationService {
             notification.setProviderMessageId(result.providerMessageId());
             notification.setSentAt(LocalDateTime.now(clock));
             notification.setLastError(null);
+            notificationMetrics.recordSent(notification.getChannel(), notification.getType(), durationNanos);
         } else {
             notification.setLastError(result.errorMessage());
+            notificationMetrics.recordFailed(notification.getChannel(), notification.getType());
             log.warn("Resend failed for notification id={}: {}", notificationId, result.errorMessage());
         }
 

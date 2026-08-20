@@ -21,7 +21,7 @@ independently of the REST API.
 | `06-scaledobject-worker.yaml` | KEDA — scales the worker role on Kafka consumer lag (3 triggers) + FAILED-notification backlog (1 trigger). Requires KEDA installed |
 | `07-pdb.yaml` | PodDisruptionBudgets for both roles |
 | `08-podmonitor.yaml` | Optional — Prometheus Operator scrape config (not in `kustomization.yaml` by default; see below) |
-| `09-grafana-dashboard.yaml` | Optional — ConfigMap that auto-imports the notification-service Overview dashboard into Grafana via kube-prometheus-stack's sidecar (not in `kustomization.yaml` by default; see below). **Does not include notification-specific business metrics** — see that file's own top comment |
+| `09-grafana-dashboard.yaml` | Optional — ConfigMap that auto-imports the notification-service Overview dashboard into Grafana via kube-prometheus-stack's sidecar (not in `kustomization.yaml` by default; see below). Includes sent/failed/dead-lettered by channel and type, retry-queue depth, and provider send latency — backed by `NotificationMetrics` |
 | `kustomization.yaml` | Ties it all together; `kustomize edit set image` to point at your build |
 
 No ingress manifest — external routing is oms-gateway's job, and this
@@ -118,17 +118,20 @@ dashboard — HTTP traffic, Kafka consumer lag by client, JVM heap, DB pool,
 all filtered to `application="notification-service"` so it never mixes
 with the other services' panels on the same Grafana instance.
 
-**Read that file's own top comment before relying on it** — it does NOT
-include the notification-specific business metrics the original plan's
-§10 asked for (notifications sent/failed by channel and type,
-time-to-delivery, retry-queue depth as a Prometheus series). Those need a
-`NotificationMetrics` class (the equivalent of
-customer-service/oms-main's `OutboxMetrics`) instrumented into
-`NotificationServiceImpl#sendAndRecord` and `NotificationRetryScheduler` —
-application code, not something this k8s directory can add on its own.
-Retry-queue depth specifically IS visible to KEDA today
-(`06-scaledobject-worker.yaml` queries it directly via SQL), just not to
-Grafana.
+A dedicated **Notifications** row covers what the original plan's §10
+explicitly asked for: sent/failed/dead-lettered rate broken out by channel
+and type, retry-queue depth (`notifications.pending.failed`, the same
+`FAILED`-count `06-scaledobject-worker.yaml`'s KEDA trigger queries
+directly — now visible in Grafana too, not just to KEDA), and provider
+send-duration percentiles by channel. All backed by `NotificationMetrics`
+— see that class's own Javadoc for the exact meter names/tags.
+
+**One thing still not here**, per that same Javadoc: a time-to-delivery
+panel (event received → notification sent). Closing that needs the
+event's own receipt time threaded through
+`NotificationService#processEvent`'s signature — a public-interface
+change touching all 3 `@KafkaListener` consumers and their tests, not
+something folded into `NotificationMetrics` itself.
 
 Once kube-prometheus-stack and `08-podmonitor.yaml` are both applied:
 
@@ -159,6 +162,6 @@ Everything marked with a comment in the manifests is a starting point:
   as a starting point, not derived from measured failure data
 - The Vault gap noted in `01-secret.example.yaml` — worth closing before
   this ever holds production credentials
-- The missing `NotificationMetrics` class noted above — worth adding
-  before trusting this dashboard for anything beyond generic
-  infra-health signals
+- The missing time-to-delivery panel noted above — the `processEvent`
+  signature change needed to close it, not something this k8s directory
+  can do alone

@@ -1,6 +1,7 @@
 package com.giri.oms.notification.repository;
 
 import com.giri.oms.notification.entity.Notification;
+import com.giri.oms.notification.entity.NotificationStatus;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -12,6 +13,16 @@ import java.util.List;
 public interface NotificationRepository extends JpaRepository<Notification, Long> {
 
     Page<Notification> findByCustomerId(Long customerId, Pageable pageable);
+
+    // Backs NotificationMetrics' "notifications.pending.failed" gauge — the
+    // in-app, Prometheus-queryable twin of
+    // k8s/06-scaledobject-worker.yaml's own
+    // "SELECT COUNT(*) ... WHERE status = 'FAILED'" query. Same number,
+    // different consumer — KEDA needs it outside the app (to decide
+    // replica count before any replica exists to scrape); this is for
+    // dashboards/alerts once instances are up. See NotificationMetrics'
+    // own Javadoc.
+    long countByStatus(NotificationStatus status);
 
     /**
      * Claims up to {@code limit} FAILED rows for this instance to retry,

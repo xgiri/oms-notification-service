@@ -2,6 +2,7 @@ package com.giri.oms.notification.scheduler;
 
 import com.giri.oms.notification.entity.Notification;
 import com.giri.oms.notification.entity.NotificationStatus;
+import com.giri.oms.notification.metrics.NotificationMetrics;
 import com.giri.oms.notification.repository.NotificationRepository;
 import com.giri.oms.notification.service.NotificationService;
 import lombok.extern.slf4j.Slf4j;
@@ -46,15 +47,18 @@ public class NotificationRetryScheduler {
 
     private final NotificationRepository notificationRepository;
     private final NotificationService notificationService;
+    private final NotificationMetrics notificationMetrics;
     private final int batchSize;
     private final int maxAttempts;
 
     public NotificationRetryScheduler(NotificationRepository notificationRepository,
                                        NotificationService notificationService,
+                                       NotificationMetrics notificationMetrics,
                                        @Value("${app.notification.retry.batch-size}") int batchSize,
                                        @Value("${app.notification.retry.max-attempts}") int maxAttempts) {
         this.notificationRepository = notificationRepository;
         this.notificationService = notificationService;
+        this.notificationMetrics = notificationMetrics;
         this.batchSize = batchSize;
         this.maxAttempts = maxAttempts;
     }
@@ -101,6 +105,7 @@ public class NotificationRetryScheduler {
         if (notification.getRetryCount() >= maxAttempts) {
             notification.setStatus(NotificationStatus.DEAD_LETTERED);
             notificationRepository.save(notification);
+            notificationMetrics.recordDeadLettered(notification.getChannel(), notification.getType());
             log.warn("Dead-lettering notification id={} type={} channel={} customerId={} after {} attempt(s): {}",
                     notification.getId(), notification.getType(), notification.getChannel(),
                     notification.getCustomerId(), notification.getRetryCount(), notification.getLastError());

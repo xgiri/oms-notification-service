@@ -4,6 +4,7 @@ import com.giri.oms.notification.entity.Notification;
 import com.giri.oms.notification.entity.NotificationChannel;
 import com.giri.oms.notification.entity.NotificationStatus;
 import com.giri.oms.notification.entity.NotificationType;
+import com.giri.oms.notification.metrics.NotificationMetrics;
 import com.giri.oms.notification.repository.NotificationRepository;
 import com.giri.oms.notification.service.NotificationService;
 import org.junit.jupiter.api.BeforeEach;
@@ -43,11 +44,15 @@ class NotificationRetrySchedulerTest {
     @Mock
     private NotificationService notificationService;
 
+    @Mock
+    private NotificationMetrics notificationMetrics;
+
     private NotificationRetryScheduler scheduler;
 
     @BeforeEach
     void setUp() {
-        scheduler = new NotificationRetryScheduler(notificationRepository, notificationService, BATCH_SIZE, MAX_ATTEMPTS);
+        scheduler = new NotificationRetryScheduler(
+                notificationRepository, notificationService, notificationMetrics, BATCH_SIZE, MAX_ATTEMPTS);
     }
 
     private Notification notificationWithRetryCount(long id, int retryCount) {
@@ -121,6 +126,7 @@ class NotificationRetrySchedulerTest {
             ArgumentCaptor<Notification> captor = ArgumentCaptor.forClass(Notification.class);
             verify(notificationRepository).save(captor.capture());
             assertThat(captor.getValue().getStatus()).isEqualTo(NotificationStatus.DEAD_LETTERED);
+            verify(notificationMetrics).recordDeadLettered(NotificationChannel.EMAIL, NotificationType.ORDER_CONFIRMED);
         }
 
         @Test

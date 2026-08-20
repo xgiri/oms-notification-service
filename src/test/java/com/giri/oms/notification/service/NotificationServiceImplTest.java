@@ -6,6 +6,7 @@ import com.giri.oms.notification.entity.Notification;
 import com.giri.oms.notification.entity.NotificationChannel;
 import com.giri.oms.notification.entity.NotificationStatus;
 import com.giri.oms.notification.entity.NotificationType;
+import com.giri.oms.notification.metrics.NotificationMetrics;
 import com.giri.oms.notification.provider.NotificationProvider;
 import com.giri.oms.notification.provider.NotificationRequest;
 import com.giri.oms.notification.provider.ProviderResult;
@@ -67,6 +68,9 @@ class NotificationServiceImplTest {
     @Mock
     private UnsubscribeTokenService unsubscribeTokenService;
 
+    @Mock
+    private NotificationMetrics notificationMetrics;
+
     private Clock clock;
     private NotificationServiceImpl notificationService;
 
@@ -79,7 +83,8 @@ class NotificationServiceImplTest {
         clock = Clock.fixed(Instant.parse("2026-08-14T12:00:00Z"), ZoneOffset.UTC);
         notificationService = new NotificationServiceImpl(
                 processedEventRepository, notificationRepository, preferenceService,
-                customerClient, composer, List.of(emailProvider), unsubscribeTokenService, clock);
+                customerClient, composer, List.of(emailProvider), unsubscribeTokenService, clock,
+                notificationMetrics);
     }
 
     @Nested
@@ -259,7 +264,8 @@ class NotificationServiceImplTest {
         void setUpMultiChannel() {
             multiChannelService = new NotificationServiceImpl(
                     processedEventRepository, notificationRepository, preferenceService,
-                    customerClient, composer, List.of(emailProvider, smsProvider), unsubscribeTokenService, clock);
+                    customerClient, composer, List.of(emailProvider, smsProvider), unsubscribeTokenService, clock,
+                    notificationMetrics);
         }
 
         @Test
