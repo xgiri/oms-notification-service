@@ -2,7 +2,8 @@
 
 This maps every one of the 12 sections from the original notification-service
 plan to what's actually been built, as of Phase 4 (SMS), the
-`CustomerWelcome` consumer, the `CustomerClient`/`OrderClient` contract
+`CustomerWelcome` and `ShipmentNotificationConsumer` consumers (**Phase 3
+is now fully complete**), the `CustomerClient`/`OrderClient` contract
 tests, and the §6 retry/DLQ scheduler.
 Status tags: **✅ Done**, **🟡 Partial**, **⬜ Not started**.
 
@@ -35,11 +36,13 @@ independent consumer group. Idempotency via a `processed_events` table
 keyed on `(event_id, notification_type)`, checked/inserted in the same
 transaction as sending.
 
-**Status: 🟡 Partial**
+**Status: ✅ Done**
 - ✅ `OrderConfirmed`, `OrderCancelled`, `PaymentConfirmed`, `PaymentFailed`,
-  `CustomerCreated` (→ `CustomerWelcome`) all wired — three Kafka consumer
-  groups (`OrderNotificationConsumer`, `PaymentNotificationConsumer`,
-  `CustomerWelcomeConsumer`)
+  `CustomerCreated` (→ `CustomerWelcome`), `ShipmentShipped`,
+  `ShipmentDelivered`, `ShipmentReturned` — all eight event types wired,
+  across four Kafka consumer groups (`OrderNotificationConsumer`,
+  `PaymentNotificationConsumer`, `CustomerWelcomeConsumer`,
+  `ShipmentNotificationConsumer`)
 - ⚠️ Deviation from plan: `oms.payment.events` doesn't exist as its own
   topic yet, so `PaymentNotificationConsumer` currently reads a second,
   independent copy of `oms.order.events` instead
@@ -48,8 +51,13 @@ transaction as sending.
 - ✅ `oms.customer.events` — subscribed (`CustomerWelcomeConsumer`), own
   dedicated consumer group even though it's currently the only listener on
   that topic — see `application.properties`' own comment on why
-- ⬜ `oms.shipment.events` — not subscribed to yet; blocked on
-  `shipment-service`'s event shapes
+- ✅ `oms.shipment.events` — subscribed (`ShipmentNotificationConsumer`),
+  own dedicated consumer group, same reasoning as `oms.customer.events`
+  above. All three event types (`ShipmentShipped`/`Delivered`/`Returned`)
+  handled in one `@KafkaListener` method — same "one logical concern, one
+  group" shape as `OrderNotificationConsumer`'s own grouping of
+  `OrderConfirmed`/`OrderCancelled`. **This was the last unwired topic —
+  §2 is now fully done.**
 
 ## §3 — Recipient resolution: don't duplicate customer data
 
@@ -308,6 +316,11 @@ prioritize writing *first*. Template rendering tests per locale/channel.
   (ignore other event types, tolerate unknown JSON fields), minus any
   `OrderClient`/`CustomerClient` mock — this consumer needs neither (see
   `CustomerWelcomeConsumer`'s own Javadoc).
+- ✅ **`ShipmentNotificationConsumerTest` — built**, same shape again —
+  three event types dispatched from one `@KafkaListener`, so three
+  happy-path tests (one per type) plus the shared ignore/tolerate/
+  propagate coverage, same as `OrderNotificationConsumerTest`'s own
+  two-type version.
 
 ## §12 — Build phases
 
@@ -315,7 +328,7 @@ The plan's own 5-phase rollout sequence, and where each stands:
 
 1. **Scaffold + one channel, one event type** — ✅ Done. Email, `OrderConfirmed` only, proved the skeleton end to end.
 2. **Preferences + opt-out, before more event types** — 🟡 Partial. Signed unsubscribe token done; per-type enforcement still a placeholder pending legal sign-off.
-3. **Remaining event types on email** — 🟡 Partial. `OrderCancelled`, `PaymentConfirmed`, `PaymentFailed`, `CustomerWelcome` done. Shipment lifecycle events still open, blocked on `shipment-service`'s event shape.
+3. **Remaining event types on email** — ✅ Done. `OrderCancelled`, `PaymentConfirmed`, `PaymentFailed`, `CustomerWelcome`, `ShipmentShipped`, `ShipmentDelivered`, `ShipmentReturned` all done — every event type in the plan's original §2 table is now wired.
 4. **Additional channels (SMS, push)** — 🟡 Partial. SMS fully done (`TwilioSmsProvider`, templates, multi-channel fan-out in `NotificationServiceImpl`). Push not started — blocked on a `customer-service` schema change (no push-token field exists yet).
 5. **Infra parity** — ✅ Done. k8s manifests (web/worker split, KEDA-driven worker autoscaling on consumer lag + retry backlog, PDBs, PodMonitor), Prometheus scrape target, and a Grafana dashboard with real notification-specific metrics (sent/failed/dead-lettered by channel and type, retry-queue depth, provider send latency, via the new `NotificationMetrics` class) are all built — see `k8s/README.md`. Only exception: no time-to-delivery panel, a deliberate deferral pending a `processEvent` signature change — see §10.
 
@@ -326,7 +339,7 @@ The plan's own 5-phase rollout sequence, and where each stands:
 | # | Section | Status |
 |---|---|---|
 | 1 | Scope | ✅ Done |
-| 2 | Event consumption | 🟡 Partial |
+| 2 | Event consumption | ✅ Done |
 | 3 | Recipient resolution | ✅ Done |
 | 4 | Composition | ✅ Done |
 | 5 | Provider abstraction | 🟡 Partial |
@@ -336,7 +349,7 @@ The plan's own 5-phase rollout sequence, and where each stands:
 | 9 | API surface | ✅ Done |
 | 10 | Observability | ✅ Done (time-to-delivery deliberately deferred) |
 | 11 | Testing strategy | 🟡 Partial |
-| 12 | Build phases | 🟡 Partial (2 of 5 phases fully closed) |
+| 12 | Build phases | 🟡 Partial (3 of 5 phases fully closed) |
 
 **§6's retry/DLQ gap is now closed** — `NotificationRetryScheduler` polls
 `FAILED` notifications and either retries them (via the existing `resend`

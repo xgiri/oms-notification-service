@@ -1,0 +1,13 @@
+We've received your return
+
+Your return for the order below has been received.
+
+Order number: [(${orderId})]
+
+We'll process your refund shortly. If you have any questions, please
+contact support.
+
+---
+This is a transactional email related to your order. You can manage your
+notification preferences at any time from your account, or unsubscribe
+from this notification type: [(${unsubscribeUrl})]

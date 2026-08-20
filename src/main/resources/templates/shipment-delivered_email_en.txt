@@ -1,0 +1,12 @@
+Your order has been delivered
+
+Your order below has arrived. We hope you enjoy it!
+
+Order number: [(${orderId})]
+
+If anything looks off, please contact support.
+
+---
+This is a transactional email related to your order. You can manage your
+notification preferences at any time from your account, or unsubscribe
+from this notification type: [(${unsubscribeUrl})]

@@ -7,19 +7,21 @@ every convention this system already established: same package layout,
 same JWT-verification-only security posture, same resilient-client pattern,
 same web/worker-role convention.
 
-**Current status: Phase 4 in progress — two channels (email, SMS), five
-event types wired (`OrderConfirmed`, `OrderCancelled`, `PaymentConfirmed`,
-`PaymentFailed` on both channels; `CustomerWelcome` newly added on both
-channels).** See [Build phases](#build-phases) for the full staged plan and
-exactly what's implemented vs. planned.
+**Current status: Phase 4 in progress — two channels (email, SMS), all
+eight event types wired** (`OrderConfirmed`, `OrderCancelled`,
+`PaymentConfirmed`, `PaymentFailed`, `CustomerWelcome`, `ShipmentShipped`,
+`ShipmentDelivered`, `ShipmentReturned` — the last three newly added).
+**Phase 3 is now fully complete.** See [Build phases](#build-phases) for
+the full staged plan and exactly what's implemented vs. planned.
 
 ## What it does
 
-Listens to `oms-main`'s and `customer-service`'s Kafka event streams and
-turns order lifecycle and account events into customer notifications —
-order confirmations, cancellations, payment outcomes, and account welcome
-emails today, on email and SMS, with shipment lifecycle events and a push
-channel staged for later phases. Every send is recorded
+Listens to `oms-main`'s, `customer-service`'s, and `shipment-service`'s
+Kafka event streams and turns order lifecycle, account, and shipment
+events into customer notifications — order confirmations, cancellations,
+payment outcomes, account welcome emails, and shipment tracking/delivery/
+return notices, all on both email and SMS, with a push channel staged for
+a later phase. Every send is recorded
 (`notifications` table) so delivery history is queryable, every event is
 processed idempotently (a Kafka redelivery must never double-send), and
 every customer has per-(type, channel) opt-in/opt-out state — real for both
@@ -41,6 +43,12 @@ Kafka (oms.customer.events)
         └──▶ CustomerWelcomeConsumer (own consumer group — no OrderClient/
                CustomerClient lookup needed; CustomerCreatedEvent already
                carries customerId directly)
+
+Kafka (oms.shipment.events)
+        │
+        └──▶ ShipmentNotificationConsumer ─▶ OrderClient ──▶ oms-main (resolve customerId)
+               (ShipmentShipped, ShipmentDelivered, ShipmentReturned —
+                own consumer group)
         │
         ▼
 NotificationServiceImpl (idempotency → preference check across every
@@ -332,7 +340,7 @@ to the order that triggered it). Not built in Phase 1.
   respects a per-channel opt-out, and skips SMS cleanly (no `FAILED` row)
   when a customer has no phone number on file.
 - `OrderNotificationConsumerTest` / `PaymentNotificationConsumerTest` /
-  `CustomerWelcomeConsumerTest` —
+  `CustomerWelcomeConsumerTest` / `ShipmentNotificationConsumerTest` —
   each Kafka listener's dispatch logic: ignoring other event types,
   tolerating unknown JSON fields, propagating (not swallowing) dependency
   failures.
@@ -389,11 +397,10 @@ currently short-circuited for every type since all are `transactional`)
 is still open, pending legal sign-off on which types genuinely can't be
 opted out of. **Phase 3 is now fully wired** —
 `OrderConfirmed`/`OrderCancelled`/`PaymentConfirmed`/`PaymentFailed`/
-`CustomerWelcome` are all done on the email channel; only the shipment
-lifecycle events remain open, blocked on `shipment-service`'s event
-shapes, not yet available. **Phase 4 is in progress** — SMS is done for
-all five wired event types; push and the infra-parity checklist (Phase 5)
-are still ahead.
+`CustomerWelcome` are all done on the email channel; **shipment lifecycle
+events are now done too — Phase 3 is fully complete.** **Phase 4 is in
+progress** — SMS is done for all eight wired event types; push and the
+infra-parity checklist (Phase 5) are still ahead.
 
 1. **Scaffold + one channel, one event type** *(this build)* — email only,
    `OrderConfirmed` only. Proves the skeleton (Kafka consumer, idempotency,
@@ -438,18 +445,33 @@ are still ahead.
      one. `NotificationServiceImpl#processEvent` still re-resolves the
      email via `CustomerClient` internally regardless — a known, accepted
      redundant hop, not a bug — see that consumer's own Javadoc for why.
-   - **Still open:** `ShipmentShipped`, `ShipmentDelivered`,
-     `ShipmentReturned` — need `shipment-service`'s event shapes, not yet
-     available. Also the natural point to revisit
-     [the customerId gap](#the-customerid-gap-and-the-recommended-fix) —
-     worth fixing once, for all of them, rather than adding yet another
-     `*Client` per remaining event type.
+   - **Done:** `ShipmentShipped`/`ShipmentDelivered`/`ShipmentReturned` —
+     see `notification.consumer.ShipmentNotificationConsumer`, on
+     shipment-service's `oms.shipment.events` topic, its own dedicated
+     consumer group (`app.kafka.consumer.shipment-group-id`). Same
+     `OrderClient` customerId-resolution workaround as
+     `OrderNotificationConsumer`/`PaymentNotificationConsumer` — that gap
+     (see below) still isn't fixed, just worked around a third time. All
+     three event types are handled in one `@KafkaListener` method, same
+     "one logical concern, one group" shape as `OrderNotificationConsumer`
+     (grouping `OrderConfirmed`/`OrderCancelled`), even though — unlike
+     that case — nothing else reads `oms.shipment.events` today, so there
+     was no actual partition-contention risk to avoid either way.
+     `ShipmentShippedEvent` also carries `trackingNumber` through to the
+     template, matching the plan's own §1 example ("Tracking number
+     email").
+   - **This closes Phase 3.** Every event type in the plan's original §2
+     table is now wired on the email channel. The remaining open item is
+     [the customerId gap](#the-customerid-gap-and-the-recommended-fix)
+     itself — worth fixing once, for all four `*Client`-dependent
+     consumers, rather than living with four separate synchronous-lookup
+     workarounds indefinitely.
 4. **Additional channels** (SMS, push) — `NotificationProvider`'s interface
    is what should make this additive (a new implementation), not a
    rewrite, if Phase 1 built that abstraction correctly. It did:
    - **Done:** SMS — `TwilioSmsProvider` (behind the `SmsSender` seam, see
      [Multi-channel fan-out](#multi-channel-fan-out-phase-4-and-what-changed-to-support-it)
-     above), SMS templates for all four wired event types, and
+     above), SMS templates for all eight wired event types, and
      `NotificationServiceImpl`'s fan-out rewrite so a customer opted into
      both channels gets both, not just email.
    - **Still open:** push. No provider, no template set, and no field on
@@ -460,14 +482,21 @@ are still ahead.
    Grafana dashboard, same checklist `shipment-service`'s own Stage 7
    established. Not started.
 
-## Known gaps (through Phase 4)
+## Known gaps (through Phase 3 completion / Phase 4 in progress)
 
 Collected in one place for visibility, even though each is also documented
 at its point of origin in code:
 
-- **`customerId` missing from `OrderConfirmedEvent`** — see
+- **`customerId` missing from `OrderConfirmedEvent`/`OrderCancelledEvent`/
+  `PaymentConfirmedEvent`/`PaymentFailedEvent`/`ShipmentShippedEvent`/
+  `ShipmentDeliveredEvent`/`ShipmentReturnedEvent`** — see
   [above](#the-customerid-gap-and-the-recommended-fix). Workaround
-  (`OrderClient`) is built and working; the real fix is deferred.
+  (`OrderClient`) is built and working, now duplicated across four separate
+  consumers (`OrderNotificationConsumer`, `PaymentNotificationConsumer`,
+  `ShipmentNotificationConsumer`, plus whichever consumer eventually needs
+  it next); the real fix — adding `customerId` to these events at the
+  source — is still deferred, and worth doing now specifically *because*
+  the workaround has been copy-pasted a third time.
 - **Internal service auth is a placeholder on both ends** — see
   [Security](#security). Neither this service's own implementation nor the
   receiving services' acceptance of it is production-grade.
@@ -476,27 +505,35 @@ at its point of origin in code:
   `NotificationPreferenceServiceImpl.isOptedIn`. Real per-type legal
   sign-off is still needed; the unsubscribe *token* itself is fixed (see
   below), but opting out currently has no effect for any type that exists
-  today. This now applies identically to SMS, not just email.
+  today. This applies identically across both channels.
 - **`resend` reconstructs template variables from stored columns only** —
-  fine for `ORDER_CONFIRMED`, would under-populate a richer future type. See
+  fine for most types, but genuinely under-populates `ShipmentShipped`
+  (the stored row has no `trackingNumber` column — see
+  [Data model](#data-model) — so a scheduler-driven or manual resend of a
+  failed `ShipmentShipped` notification renders that field blank). See
   `NotificationService.resend`'s own Javadoc.
-- **No contract/resilience tests for `CustomerClient`/`OrderClient` yet** —
-  see [Testing](#testing).
-- **No true HTTP-contract test for `TwilioSmsSender`** *(new)* —
-  `TwilioSmsProviderTest` covers this service's own retry/classification
-  logic against a mock; nothing yet catches a real drift in Twilio's API
-  shape. See [Testing](#testing) for the full reasoning on why this is
-  harder to close than the RestClient-based clients' equivalent gap.
+- **No true HTTP-contract test for `TwilioSmsSender`** — `TwilioSmsProviderTest`
+  covers this service's own retry/classification logic against a mock;
+  nothing yet catches a real drift in Twilio's API shape. Evaluated and
+  deliberately not built — see [Testing](#testing) for the full reasoning.
 - **A customer opted into SMS with no phone number on file produces no
-  visible failure signal** *(new)* — silently skipped, not recorded as
-  `FAILED`. See
+  visible failure signal** — silently skipped, not recorded as `FAILED`.
+  See
   [Multi-channel fan-out](#multi-channel-fan-out-phase-4-and-what-changed-to-support-it)
   for the reasoning and why it's worth revisiting if it turns out to hide
   a real data-quality problem.
-- **No push channel** *(new)* — no provider, no template set, and no field
-  on `CustomerClientResponse`/`customer-service`'s `Customer` entity for a
+- **No push channel** — no provider, no template set, and no field on
+  `CustomerClientResponse`/`customer-service`'s `Customer` entity for a
   push token. The last part is a cross-repo change SMS didn't need.
-- **No infra (Kubernetes/monitoring) at all** — Phase 5, not started.
+
+**Resolved since this list was last written** (kept here briefly so the
+history isn't lost, not as open items): contract/resilience tests for
+`CustomerClient` and `OrderClient` are now built (see
+[Testing](#testing)); the scheduled retry/DLQ piece (§6,
+`NotificationRetryScheduler`) is now built; Kubernetes manifests, a
+Prometheus scrape target, and a Grafana dashboard (Phase 5) are all now
+built (see `k8s/README.md`); all shipment lifecycle events are now wired
+(this closes Phase 3 entirely).
 
 **Fixed this session:** the unsubscribe endpoint's signed-token gap — see
 [API](#api) and `security.UnsubscribeTokenService`.

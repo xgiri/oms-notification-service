@@ -1,0 +1,1 @@
+Your order #[(${orderId})] has shipped! Tracking: [(${trackingNumber})]. Opt out: [(${unsubscribeUrl})]

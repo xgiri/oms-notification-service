@@ -104,15 +104,19 @@ class NotificationComposerImplTest {
     }
 
     @Test
-    void throwsAClearError_whenNoTemplateExistsForTheType() {
-        // SHIPMENT_SHIPPED has a subject line (NotificationComposerImpl.subjectFor)
-        // but no template file yet — see this service's README on which
-        // types are implemented vs. planned (shipment/customer event types
-        // are blocked on shipment-service/customer-service event shapes).
-        // Composing it should fail loudly at template resolution, not
-        // silently render blank content.
+    void throwsAClearError_whenNoTemplateExistsForTheLocale() {
+        // As of the ShipmentNotificationConsumer work, every NotificationType
+        // now has both EMAIL and SMS templates — there's no longer a type
+        // with a subject line (NotificationComposerImpl.subjectFor) but no
+        // template file to exercise this failure mode against. A missing
+        // LOCALE is the remaining realistic way to hit template resolution
+        // failure: only "en" template files exist anywhere in this service
+        // (see this service's README — locale support is structural, day-1,
+        // but only "en" content has actually been written). Composing with
+        // any other locale should fail loudly at template resolution, not
+        // silently render blank content or silently fall back to "en".
         assertThatThrownBy(() -> composer.compose(
-                NotificationType.SHIPMENT_SHIPPED, NotificationChannel.EMAIL, "en", "jane@example.com",
+                NotificationType.ORDER_CONFIRMED, NotificationChannel.EMAIL, "fr", "jane@example.com",
                 Map.of("orderId", 12345)))
                 .isInstanceOf(RuntimeException.class);
     }
@@ -145,12 +149,12 @@ class NotificationComposerImplTest {
     }
 
     @Test
-    void sms_throwsAClearError_whenNoSmsTemplateExistsForTheType() {
-        // Mirrors throwsAClearError_whenNoTemplateExistsForTheType, but for
-        // a type/channel pair where the .txt SMS template itself is
-        // missing rather than the whole type being unimplemented.
+    void sms_throwsAClearError_whenNoSmsTemplateExistsForTheLocale() {
+        // Mirrors throwsAClearError_whenNoTemplateExistsForTheLocale — same
+        // "every type now has both channels covered, so a missing locale is
+        // the remaining realistic gap" reasoning, for the SMS channel.
         assertThatThrownBy(() -> composer.compose(
-                NotificationType.SHIPMENT_SHIPPED, NotificationChannel.SMS, "en", "+15551234567",
+                NotificationType.ORDER_CONFIRMED, NotificationChannel.SMS, "fr", "+15551234567",
                 Map.of("orderId", 12345)))
                 .isInstanceOf(RuntimeException.class);
     }
