@@ -72,7 +72,7 @@ public class NotificationController {
     @Operation(summary = "Manually retry a FAILED/DEAD_LETTERED notification",
             description = "Restricted to ADMIN. See NotificationService.resend's Javadoc for the Phase 1 " +
                     "limitation on reconstructed template variables.")
-    @ApiErrorCodes({ErrorCode.NOTIFICATION_NOT_FOUND})
+    @ApiErrorCodes({ErrorCode.NOTIFICATION_NOT_FOUND, ErrorCode.ILLEGAL_NOTIFICATION_STATE})
     @ApiResponses({
             @ApiResponse(responseCode = "204", description = "Resend attempted")
     })

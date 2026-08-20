@@ -6,6 +6,8 @@ import com.giri.oms.notification.entity.Notification;
 import com.giri.oms.notification.entity.NotificationChannel;
 import com.giri.oms.notification.entity.NotificationStatus;
 import com.giri.oms.notification.entity.NotificationType;
+import com.giri.oms.notification.exception.IllegalNotificationStateException;
+import com.giri.oms.notification.exception.NotificationNotFoundException;
 import com.giri.oms.notification.metrics.NotificationMetrics;
 import com.giri.oms.notification.provider.NotificationProvider;
 import com.giri.oms.notification.provider.NotificationRequest;
@@ -30,6 +32,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.never;
@@ -240,6 +243,92 @@ class NotificationServiceImplTest {
             // Still marked processed, same reasoning as the opted-out case —
             // a redelivery must not re-send.
             verify(processedEventRepository).save(any());
+        }
+    }
+
+    /**
+     * Covers the precondition fix on {@code resend} — see that method's own
+     * Javadoc and {@code ErrorCode.ILLEGAL_NOTIFICATION_STATE}. Before this
+     * fix, {@code resend} had no status check at all: calling
+     * {@code POST /notifications/{id}/resend} on a PENDING or already-SENT
+     * row would attempt (and record) a real send, silently, despite the
+     * interface Javadoc's own claim that only FAILED/DEAD_LETTERED is a
+     * meaningful target.
+     */
+    @Nested
+    class Resend {
+
+        @Test
+        void throwsNotificationNotFoundException_whenTheIdDoesNotExist() {
+            when(notificationRepository.findById(999L)).thenReturn(java.util.Optional.empty());
+
+            assertThatThrownBy(() -> notificationService.resend(999L))
+                    .isInstanceOf(NotificationNotFoundException.class);
+
+            verifyNoInteractions(emailProvider);
+        }
+
+        @Test
+        void throwsIllegalNotificationStateException_forAPendingNotification() {
+            assertRejectedWithoutSending(NotificationStatus.PENDING);
+        }
+
+        @Test
+        void throwsIllegalNotificationStateException_forAnAlreadySentNotification() {
+            assertRejectedWithoutSending(NotificationStatus.SENT);
+        }
+
+        @Test
+        void proceeds_forAFailedNotification() {
+            assertAllowedToProceed(NotificationStatus.FAILED);
+        }
+
+        @Test
+        void proceeds_forADeadLetteredNotification() {
+            // The one way a human gets a DEAD_LETTERED row out of that
+            // terminal state — see NotificationRetryScheduler's own Javadoc.
+            assertAllowedToProceed(NotificationStatus.DEAD_LETTERED);
+        }
+
+        private void assertRejectedWithoutSending(NotificationStatus status) {
+            Notification notification = notificationWithStatus(status);
+            when(notificationRepository.findById(notification.getId())).thenReturn(java.util.Optional.of(notification));
+
+            assertThatThrownBy(() -> notificationService.resend(notification.getId()))
+                    .isInstanceOf(IllegalNotificationStateException.class)
+                    .hasMessageContaining(status.name());
+
+            // The whole point of this fix: reject BEFORE any provider call
+            // or repository write, not after.
+            verifyNoInteractions(emailProvider);
+            verify(notificationRepository, never()).save(any());
+        }
+
+        private void assertAllowedToProceed(NotificationStatus status) {
+            Notification notification = notificationWithStatus(status);
+            when(notificationRepository.findById(notification.getId())).thenReturn(java.util.Optional.of(notification));
+            when(emailProvider.channel()).thenReturn(NotificationChannel.EMAIL);
+            when(composer.compose(any(), any(), anyString(), anyString(), any()))
+                    .thenReturn(new NotificationRequest("jane@example.com", "subj", "html", "text"));
+            when(emailProvider.send(any())).thenReturn(ProviderResult.success("msg-1"));
+
+            notificationService.resend(notification.getId());
+
+            verify(emailProvider).send(any());
+            verify(notificationRepository).save(notification);
+        }
+
+        private Notification notificationWithStatus(NotificationStatus status) {
+            Notification notification = new Notification();
+            notification.setId(1L);
+            notification.setType(NotificationType.ORDER_CONFIRMED);
+            notification.setChannel(NotificationChannel.EMAIL);
+            notification.setStatus(status);
+            notification.setCustomerId(CUSTOMER_ID);
+            notification.setOrderId(ORDER_ID);
+            notification.setRecipientAddress("jane@example.com");
+            notification.setRetryCount(0);
+            return notification;
         }
     }
 

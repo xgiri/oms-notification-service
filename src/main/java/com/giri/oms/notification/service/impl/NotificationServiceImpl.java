@@ -7,6 +7,7 @@ import com.giri.oms.notification.entity.NotificationChannel;
 import com.giri.oms.notification.entity.NotificationStatus;
 import com.giri.oms.notification.entity.NotificationType;
 import com.giri.oms.notification.entity.ProcessedEvent;
+import com.giri.oms.notification.exception.IllegalNotificationStateException;
 import com.giri.oms.notification.exception.NotificationNotFoundException;
 import com.giri.oms.notification.metrics.NotificationMetrics;
 import com.giri.oms.notification.provider.NotificationProvider;
@@ -246,6 +247,19 @@ public class NotificationServiceImpl implements NotificationService {
     public void resend(Long notificationId) {
         Notification notification = notificationRepository.findById(notificationId)
                 .orElseThrow(() -> new NotificationNotFoundException(notificationId));
+
+        // See this method's own interface Javadoc — only FAILED/DEAD_LETTERED
+        // is a meaningful resend target. NotificationRetryScheduler never
+        // trips this (it only ever calls resend() on rows it already
+        // confirmed are FAILED — see that class's own Javadoc); this exists
+        // for the public POST /resend endpoint, which has no such guarantee
+        // about what a caller passes in.
+        if (notification.getStatus() != NotificationStatus.FAILED
+                && notification.getStatus() != NotificationStatus.DEAD_LETTERED) {
+            throw new IllegalNotificationStateException(
+                    "Notification %d cannot be resent from status %s — only FAILED or DEAD_LETTERED can be resent"
+                            .formatted(notificationId, notification.getStatus()));
+        }
 
         // See this method's own Javadoc on the interface — reconstructed,
         // not the original composition inputs.

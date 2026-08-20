@@ -60,7 +60,16 @@ public enum ErrorCode {
     // purpose) has no legitimate use and only helps someone probing the
     // endpoint.
     INVALID_UNSUBSCRIBE_TOKEN("E", "NT", "101", HttpStatus.BAD_REQUEST,
-            "This unsubscribe link is invalid or has expired");
+            "This unsubscribe link is invalid or has expired"),
+    // Thrown by NotificationServiceImpl#resend for a notification that
+    // isn't FAILED or DEAD_LETTERED — see that method's own Javadoc for why
+    // resending a PENDING/SENT row isn't a meaningful operation. Same
+    // 409 CONFLICT convention as oms-main's ILLEGAL_ORDER_STATE/
+    // ILLEGAL_PAYMENT_STATE for the same kind of situation (an operation
+    // that conflicts with the resource's current status, not a validation
+    // error on the request itself).
+    ILLEGAL_NOTIFICATION_STATE("E", "NT", "102", HttpStatus.CONFLICT,
+            "Operation conflicts with the notification's current status");
 
     private final String prefix;
     private final String componentId;

@@ -134,15 +134,23 @@ as a product decision to make later, not to build speculatively.
   V1 migration were all untouched by that work)
 - ✅ Provider fallback correctly *not* built — matches the plan's own
   "don't over-engineer this speculatively" guidance
-- ⚠️ **Separate, pre-existing bug, found (not fixed) while wiring this
-  up:** `NotificationService#resend`'s own Javadoc states it's "only valid
-  from FAILED or DEAD_LETTERED," but the implementation doesn't actually
-  enforce that precondition; it'll attempt a resend on a `SENT` or
-  `PENDING` row too if called directly via the API. Doesn't affect the new
-  scheduler (it only ever calls `resend` on rows it already confirmed are
-  `FAILED`), but it's a real gap in the public `POST /resend` endpoint's
-  own guarantees — left unfixed since it's a separate decision from what
-  was in scope here
+- ✅ **Fixed: `resend`'s missing precondition check.** Found (flagged, not
+  fixed) while wiring up `NotificationRetryScheduler` — the interface
+  Javadoc claimed "only valid from FAILED or DEAD_LETTERED" but the
+  implementation didn't enforce it, so `POST /notifications/{id}/resend`
+  would silently attempt (and record) a real send on a `PENDING` or
+  already-`SENT` row too. Now throws a new
+  `IllegalNotificationStateException`
+  (`ErrorCode.ILLEGAL_NOTIFICATION_STATE`, `NT102`, `409 CONFLICT`) before
+  any provider call or repository write — same shape as oms-main's
+  `IllegalOrderStateException`/`IllegalPaymentStateException` for the same
+  kind of situation. Didn't affect `NotificationRetryScheduler` itself (it
+  only ever calls `resend` on rows it already confirmed are `FAILED`, so
+  this precondition can never reject its own calls — verified by reading
+  that scheduler's query), only the public endpoint's own guarantee to
+  callers. Covered by a new `Resend` nested test class in
+  `NotificationServiceImplTest` (rejects PENDING/SENT without touching the
+  provider or repository; proceeds normally for FAILED/DEAD_LETTERED).
 
 ## §7 — Preferences & compliance
 
@@ -366,6 +374,7 @@ things worth flagging about this work overall:
 provider is now the last real blocker on Phase 4, and — unlike everything
 closed in this session, which stayed within this repo — it's a cross-repo
 change (a `customer-service` schema addition). The
-`NotificationService#resend` precondition bug (found while building §6)
-and the time-to-delivery metric (found while building this) both also
-remain open, by choice, as named follow-ups rather than silent gaps.
+`NotificationService#resend` precondition bug (found while building §6) is
+now fixed — see §6 above. The time-to-delivery metric (found while
+building §10) remains open, by choice, as a named follow-up rather than a
+silent gap.

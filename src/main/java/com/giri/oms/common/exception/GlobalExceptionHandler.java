@@ -2,6 +2,7 @@ package com.giri.oms.common.exception;
 
 import com.giri.oms.customerclient.exception.CustomerNotFoundException;
 import com.giri.oms.customerclient.exception.CustomerServiceUnavailableException;
+import com.giri.oms.notification.exception.IllegalNotificationStateException;
 import com.giri.oms.notification.exception.InvalidUnsubscribeTokenException;
 import com.giri.oms.notification.exception.NotificationNotFoundException;
 import com.giri.oms.orderclient.exception.OrderNotFoundException;
@@ -63,6 +64,17 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(NotificationNotFoundException.class)
     public ResponseEntity<ErrorResponse> handleNotificationNotFound(NotificationNotFoundException ex, HttpServletRequest request) {
         log.warn("Notification not found — path: {}, message: {}", request.getRequestURI(), ex.getMessage());
+        return build(codeOf(ex), ex.getMessage(), request);
+    }
+
+    // Thrown by NotificationServiceImpl#resend for a notification that
+    // isn't FAILED/DEAD_LETTERED — see that method's own Javadoc and
+    // ErrorCode.ILLEGAL_NOTIFICATION_STATE. A business-rule rejection, not
+    // a system health problem, so WARN not ERROR — same posture as every
+    // other "expected caller-side rejection" handler in this class.
+    @ExceptionHandler(IllegalNotificationStateException.class)
+    public ResponseEntity<ErrorResponse> handleIllegalNotificationState(IllegalNotificationStateException ex, HttpServletRequest request) {
+        log.warn("Illegal notification state transition — path: {}, message: {}", request.getRequestURI(), ex.getMessage());
         return build(codeOf(ex), ex.getMessage(), request);
     }
 
