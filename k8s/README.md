@@ -51,6 +51,16 @@ anywhere in OMS calls into it).
   `SMTP_HOST` and `01-secret.example.yaml`'s `TWILIO_*` keys are
   placeholders. Mailpit (docker-compose.snippet.yml) is local-dev-only and
   has no place in a real deployment.
+- **FCM credentials — NOT required to apply this directory as-is.**
+  `PUSH_NOTIFICATIONS_ENABLED` defaults to `"false"` in
+  `00-configmap.yaml`, and `FcmConfig`/`FcmPushProvider`/`FcmPushSender`
+  are all gated behind that flag (`@ConditionalOnProperty`) — an
+  unconfigured `FCM_SERVICE_ACCOUNT_JSON_BASE64` never gets evaluated
+  while the flag is off. There's also nothing to send to yet regardless:
+  `customer-service` doesn't expose a device push token
+  (`CustomerClientResponse#pushToken()`) as of this writing. Only fill in
+  real FCM credentials and flip the flag once that upstream field ships —
+  see `FcmPushProvider`'s own Javadoc.
 
 ## Applying
 
@@ -74,15 +84,16 @@ kubectl apply -k .
   `minReplicas: 2` / `maxReplicas: 8`.
 - **Worker**: KEDA (`06-scaledobject-worker.yaml`), `minReplicaCount: 1`
   (never zero — someone has to consume events and drain the retry queue)
-  / `maxReplicaCount: 6`, driven by whichever of 4 triggers reports the
+  / `maxReplicaCount: 6`, driven by whichever of 5 triggers reports the
   highest demand:
   - Consumer lag on `oms-notification-service` (order events)
   - Consumer lag on `oms-notification-service-payment` (payment events,
     same topic, separate group — see `application.properties`' own
     comment on why)
   - Consumer lag on `oms-notification-service-customer` (customer events)
+  - Consumer lag on `oms-notification-service-shipment` (shipment events)
   - `FAILED` row count in the `notifications` table — a genuinely
-    different signal from the 3 Kafka triggers: a provider outage can
+    different signal from the 4 Kafka triggers: a provider outage can
     spike this with zero consumer lag, since ingestion isn't the
     bottleneck, sending is
 
@@ -154,7 +165,7 @@ Everything marked with a comment in the manifests is a starting point:
 
 - `resources.requests`/`limits` on both Deployments (placeholder values)
 - Web HPA `averageUtilization: 70`, `minReplicas`/`maxReplicas`
-- Worker KEDA `lagThreshold: "50"` (all 3 Kafka triggers) and
+- Worker KEDA `lagThreshold: "50"` (all 4 Kafka triggers) and
   `targetQueryValue: "100"` (the FAILED-backlog trigger) — untuned
   starting points, same as oms-main's own KEDA triggers
 - `NOTIFICATION_RETRY_MAX_ATTEMPTS`/`_BATCH_SIZE`/`_POLL_INTERVAL_MS` in

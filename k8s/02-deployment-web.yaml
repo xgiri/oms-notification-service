@@ -1,6 +1,6 @@
 # Same image as the worker Deployment — only APP_PROCESS_ROLE differs, same
 # split oms-main's own web/worker pair demonstrates. Web serves the REST
-# API (notification.controller); it does NOT run the 3 @KafkaListener
+# API (notification.controller); it does NOT run the 4 @KafkaListener
 # consumers or NotificationRetryScheduler — see each of those classes' own
 # @ConditionalOnProperty(name = "app.process.role", havingValue = "worker",
 # matchIfMissing = true) guard, and see 05-deployment-worker.yaml for the
@@ -69,7 +69,7 @@ spec:
                 name: notification-service-secrets
           env:
             # The one thing that makes this the web role instead of
-            # worker — stops the 3 @KafkaListener consumers and
+            # worker — stops the 4 @KafkaListener consumers and
             # NotificationRetryScheduler from starting; Tomcat/HTTP stays
             # up. See each of those classes' own @ConditionalOnProperty.
             - name: APP_PROCESS_ROLE

@@ -1,7 +1,8 @@
 # Same image, same code as notification-service-web — only APP_PROCESS_ROLE
-# differs, exactly like oms-main's own web/worker pair. Runs the 3
+# differs, exactly like oms-main's own web/worker pair. Runs the 4
 # @KafkaListener consumers (OrderNotificationConsumer,
-# PaymentNotificationConsumer, CustomerWelcomeConsumer) and
+# PaymentNotificationConsumer, CustomerWelcomeConsumer,
+# ShipmentNotificationConsumer) and
 # NotificationRetryScheduler. No Service is defined for this Deployment
 # anywhere in this directory, and none should be — nothing should route
 # HTTP traffic here even though Tomcat is still listening (same reasoning
