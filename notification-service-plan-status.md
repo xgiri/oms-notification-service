@@ -268,9 +268,12 @@ sent).
   choice, not oversight: it needs the event's own receipt time threaded
   through `NotificationService#processEvent`'s signature (from each
   `@KafkaListener`'s `ConsumerRecord#timestamp()`) — a public-interface
-  change touching all 3 consumers and their tests, not something that
-  belonged folded silently into `NotificationMetrics`. Flagged in that
-  class's own Javadoc as a follow-up
+  change touching all 4 consumers (`OrderNotificationConsumer`,
+  `PaymentNotificationConsumer`, `CustomerWelcomeConsumer`,
+  `ShipmentNotificationConsumer` — this doc's own count was stale at "3"
+  before `ShipmentNotificationConsumer` shipped) and their tests, not
+  something that belonged folded silently into `NotificationMetrics`.
+  Flagged in that class's own Javadoc as a follow-up
 
 ## §11 — Testing strategy
 
@@ -367,7 +370,7 @@ The plan's own 5-phase rollout sequence, and where each stands:
 1. **Scaffold + one channel, one event type** — ✅ Done. Email, `OrderConfirmed` only, proved the skeleton end to end.
 2. **Preferences + opt-out, before more event types** — ✅ Done. Signed unsubscribe token done; per-type enforcement is now real (`CUSTOMER_WELCOME` opt-out-able, order/payment/shipment stay required) — see §7.
 3. **Remaining event types on email** — ✅ Done. `OrderCancelled`, `PaymentConfirmed`, `PaymentFailed`, `CustomerWelcome`, `ShipmentShipped`, `ShipmentDelivered`, `ShipmentReturned` all done — every event type in the plan's original §2 table is now wired.
-4. **Additional channels (SMS, push)** — 🟡 Partial. SMS fully done (`TwilioSmsProvider`, templates, multi-channel fan-out in `NotificationServiceImpl`). Push not started — blocked on a `customer-service` schema change (no push-token field exists yet).
+4. **Additional channels (SMS, push)** — 🟡 Partial. SMS fully done (`TwilioSmsProvider`, templates, multi-channel fan-out in `NotificationServiceImpl`). Push (`FcmPushProvider`) is now built — see §5 — but deliberately gated off (`app.notification.push.enabled=false`) since `customer-service` doesn't expose a push token to send to yet; that field is the one remaining blocker, not missing code here.
 5. **Infra parity** — ✅ Done. k8s manifests (web/worker split, KEDA-driven worker autoscaling on consumer lag + retry backlog, PDBs, PodMonitor), Prometheus scrape target, and a Grafana dashboard with real notification-specific metrics (sent/failed/dead-lettered by channel and type, retry-queue depth, provider send latency, via the new `NotificationMetrics` class) are all built — see `k8s/README.md`. Only exception: no time-to-delivery panel, a deliberate deferral pending a `processEvent` signature change — see §10.
 
 ---
@@ -415,8 +418,8 @@ things worth flagging about this work overall:
 3. One metric was deliberately NOT built as part of this: time-to-delivery.
    Closing it needs a `NotificationService#processEvent` signature
    change (threading the Kafka record's own timestamp through from each
-   consumer) — a public-interface change touching all 3 consumers and
-   their tests, judged too invasive to fold in silently alongside a
+   of the 4 consumers) — a public-interface change touching all of them
+   and their tests, judged too invasive to fold in silently alongside a
    metrics class. Flagged as a named follow-up in `NotificationMetrics`'
    own Javadoc rather than either done without asking or dropped
    unmentioned.
