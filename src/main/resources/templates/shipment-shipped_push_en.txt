@@ -1,0 +1,1 @@
+Tracking: [(${trackingNumber})]. Manage preferences: [(${unsubscribeUrl})]

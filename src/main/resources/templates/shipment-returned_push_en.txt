@@ -1,0 +1,1 @@
+We'll process your refund shortly. Manage preferences: [(${unsubscribeUrl})]

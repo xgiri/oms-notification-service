@@ -1,7 +1,8 @@
 # notification-service — Build Plan & Status
 
 This maps every one of the 12 sections from the original notification-service
-plan to what's actually been built, as of Phase 4 (SMS), the
+plan to what's actually been built, as of Phase 4 (SMS, and now push as far
+as this repo alone can build it — see §5), the
 `CustomerWelcome` and `ShipmentNotificationConsumer` consumers (**Phase 3
 is now fully complete**), real per-type opt-out enforcement
 (**Phase 2 is now fully complete**), the `CustomerClient`/`OrderClient`
@@ -111,7 +112,31 @@ instance.
 - ✅ Followed the plan's explicit checklist item: `minimum-number-of-calls`
   set explicitly for `twilioSmsProvider`, learned from the gap found twice
   before
-- ⬜ No push provider (`FcmPushProvider` or equivalent) yet
+- 🟡 **`FcmPushProvider` — now built, but deliberately gated off
+  (`app.notification.push.enabled=false` by default) and genuinely
+  untestable end to end.** Built as far as this side of the system can be
+  built without a `customer-service` change — see the paragraph below this
+  table. Structurally a full mirror of `TwilioSmsProvider` (`PushSender`/
+  `FcmPushSender` split, same programmatic resilience4j composition, same
+  permanent-vs-transient classification done inside `doSend` rather than
+  via `ignore-exceptions`, own `fcmPushProvider` resilience4j instance).
+  `FcmConfig` initializes `FirebaseApp` at startup, gated behind the same
+  property so an unconfigured deployment never needs real FCM credentials
+  just to boot. All 8 wired `NotificationType`s now have a
+  `<type>_push_en.txt` template (title comes from
+  `NotificationComposerImpl#subjectFor`, reused as the push notification's
+  title — no `NotificationRequest` field needed just for push).
+  `CustomerClientResponse` gained a `pushToken` field ahead of the schema
+  change that will populate it — see that record's own Javadoc.
+  `NotificationServiceImpl#recipientAddressFor`'s PUSH case now returns
+  `customer.pushToken()` instead of throwing, so this degrades safely
+  (skipped, same as SMS-without-a-phone) rather than crashing the moment
+  someone enables the flag before the upstream field exists.
+  **What's still genuinely missing, and can't be built from this side:** a
+  device push token to send to at all. `customer-service` doesn't expose
+  one — not a client-side gap, the data doesn't exist upstream. This
+  remains the actual blocker on Phase 4 being complete; see this doc's
+  closing summary.
 
 ## §6 — Delivery reliability
 
@@ -396,10 +421,12 @@ things worth flagging about this work overall:
    own Javadoc rather than either done without asking or dropped
    unmentioned.
 
-**What's newly the most consequential open item:** §5's missing push
-provider is now the last real blocker on Phase 4, and — unlike everything
-closed in this session, which stayed within this repo — it's a cross-repo
-change (a `customer-service` schema addition). The
+**What's newly the most consequential open item:** §5's push provider is
+now built as far as this repo alone can take it — the actual remaining
+blocker on Phase 4 has narrowed to one specific thing: a `customer-service`
+schema change to expose a device push token. Unlike everything else closed
+in this session, that one piece is a genuine cross-repo change, not
+something more work here can close. The
 `NotificationService#resend` precondition bug (found while building §6) is
 now fixed — see §6 above. The time-to-delivery metric (found while
 building §10) remains open, by choice, as a named follow-up rather than a

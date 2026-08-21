@@ -119,7 +119,7 @@ class NotificationServiceImplTest {
             when(preferenceService.isOptedIn(CUSTOMER_ID, NotificationType.ORDER_CONFIRMED, NotificationChannel.EMAIL))
                     .thenReturn(true);
             when(customerClient.getCustomer(CUSTOMER_ID))
-                    .thenReturn(new CustomerClientResponse(CUSTOMER_ID, "Jane", "Doe", "jane@example.com", null));
+                    .thenReturn(new CustomerClientResponse(CUSTOMER_ID, "Jane", "Doe", "jane@example.com", null, null));
             when(emailProvider.channel()).thenReturn(NotificationChannel.EMAIL);
             when(composer.compose(any(), any(), anyString(), anyString(), any()))
                     .thenReturn(new NotificationRequest("jane@example.com", "subj", "html", "text"));
@@ -140,7 +140,7 @@ class NotificationServiceImplTest {
                     .thenReturn(true);
             when(preferenceService.isOptedIn(any(), any(), any())).thenReturn(true);
             when(customerClient.getCustomer(CUSTOMER_ID))
-                    .thenReturn(new CustomerClientResponse(CUSTOMER_ID, "Jane", "Doe", "jane@example.com", null));
+                    .thenReturn(new CustomerClientResponse(CUSTOMER_ID, "Jane", "Doe", "jane@example.com", null, null));
             when(emailProvider.channel()).thenReturn(NotificationChannel.EMAIL);
             when(composer.compose(any(), any(), anyString(), anyString(), any()))
                     .thenReturn(new NotificationRequest("jane@example.com", "subj", "html", "text"));
@@ -195,7 +195,7 @@ class NotificationServiceImplTest {
                     .thenReturn(false);
             when(preferenceService.isOptedIn(any(), any(), any())).thenReturn(true);
             when(customerClient.getCustomer(CUSTOMER_ID))
-                    .thenReturn(new CustomerClientResponse(CUSTOMER_ID, "Jane", "Doe", "jane@example.com", null));
+                    .thenReturn(new CustomerClientResponse(CUSTOMER_ID, "Jane", "Doe", "jane@example.com", null, null));
             when(emailProvider.channel()).thenReturn(NotificationChannel.EMAIL);
             when(unsubscribeTokenService.buildUnsubscribeLink(CUSTOMER_ID, NotificationType.ORDER_CONFIRMED, NotificationChannel.EMAIL))
                     .thenReturn("https://notify.example.com/api/v1/notifications/unsubscribe?token=signed-token");
@@ -223,7 +223,7 @@ class NotificationServiceImplTest {
                     .thenReturn(false);
             when(preferenceService.isOptedIn(any(), any(), any())).thenReturn(true);
             when(customerClient.getCustomer(CUSTOMER_ID))
-                    .thenReturn(new CustomerClientResponse(CUSTOMER_ID, "Jane", "Doe", "jane@example.com", null));
+                    .thenReturn(new CustomerClientResponse(CUSTOMER_ID, "Jane", "Doe", "jane@example.com", null, null));
             when(emailProvider.channel()).thenReturn(NotificationChannel.EMAIL);
             when(composer.compose(any(), any(), anyString(), anyString(), any()))
                     .thenReturn(new NotificationRequest("jane@example.com", "subj", "html", "text"));
@@ -368,7 +368,7 @@ class NotificationServiceImplTest {
             when(preferenceService.isOptedIn(CUSTOMER_ID, NotificationType.ORDER_CONFIRMED, NotificationChannel.SMS))
                     .thenReturn(true);
             when(customerClient.getCustomer(CUSTOMER_ID))
-                    .thenReturn(new CustomerClientResponse(CUSTOMER_ID, "Jane", "Doe", "jane@example.com", "+15551234567"));
+                    .thenReturn(new CustomerClientResponse(CUSTOMER_ID, "Jane", "Doe", "jane@example.com", "+15551234567", null));
             when(composer.compose(any(), any(), anyString(), anyString(), any()))
                     .thenReturn(new NotificationRequest("recipient", "subj", "html", "text"));
             when(emailProvider.send(any())).thenReturn(ProviderResult.success("email-msg-1"));
@@ -396,7 +396,7 @@ class NotificationServiceImplTest {
             when(preferenceService.isOptedIn(CUSTOMER_ID, NotificationType.ORDER_CONFIRMED, NotificationChannel.SMS))
                     .thenReturn(false);
             when(customerClient.getCustomer(CUSTOMER_ID))
-                    .thenReturn(new CustomerClientResponse(CUSTOMER_ID, "Jane", "Doe", "jane@example.com", "+15551234567"));
+                    .thenReturn(new CustomerClientResponse(CUSTOMER_ID, "Jane", "Doe", "jane@example.com", "+15551234567", null));
             when(composer.compose(any(), any(), anyString(), anyString(), any()))
                     .thenReturn(new NotificationRequest("jane@example.com", "subj", "html", "text"));
             when(emailProvider.send(any())).thenReturn(ProviderResult.success("email-msg-1"));
@@ -420,7 +420,7 @@ class NotificationServiceImplTest {
             when(smsProvider.channel()).thenReturn(NotificationChannel.SMS);
             when(preferenceService.isOptedIn(any(), any(), any())).thenReturn(true);
             when(customerClient.getCustomer(CUSTOMER_ID))
-                    .thenReturn(new CustomerClientResponse(CUSTOMER_ID, "Jane", "Doe", "jane@example.com", null));
+                    .thenReturn(new CustomerClientResponse(CUSTOMER_ID, "Jane", "Doe", "jane@example.com", null, null));
             when(composer.compose(any(), any(), anyString(), anyString(), any()))
                     .thenReturn(new NotificationRequest("jane@example.com", "subj", "html", "text"));
             when(emailProvider.send(any())).thenReturn(ProviderResult.success("email-msg-1"));

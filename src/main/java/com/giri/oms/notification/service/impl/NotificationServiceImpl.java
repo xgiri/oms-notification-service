@@ -130,11 +130,14 @@ public class NotificationServiceImpl implements NotificationService {
     /**
      * Every channel with a registered {@link NotificationProvider} bean —
      * derived from {@code providers} rather than a hardcoded list, so
-     * adding a provider (TwilioSmsProvider in Phase 4, a future push
-     * provider) makes {@link #processEvent} consider that channel with no
-     * change here. A channel enum value with no provider bean (PUSH today)
-     * is simply never a candidate — see {@link #recipientAddressFor}'s own
-     * note on why that method can still afford to throw on PUSH.
+     * adding a provider (TwilioSmsProvider in Phase 4) makes
+     * {@link #processEvent} consider that channel with no change here.
+     * PUSH is the current example of the other direction this cuts: with
+     * {@code app.notification.push.enabled=false} (the default — see
+     * {@code FcmPushProvider}'s own Javadoc), no PUSH provider bean exists,
+     * so PUSH is simply never a candidate here regardless of any stored
+     * preference — a customer "opted into" a channel with no live provider
+     * is exactly as inert as one with no address on file.
      */
     private List<NotificationChannel> registeredChannels() {
         return providers.stream().map(NotificationProvider::channel).toList();
@@ -144,20 +147,21 @@ public class NotificationServiceImpl implements NotificationService {
      * {@code null} means "this customer has no address on file for this
      * channel" — a data-availability gap, not a provider failure — see
      * {@link #processEvent}'s own Javadoc on why that's skipped rather than
-     * recorded as FAILED. The PUSH case intentionally throws rather than
-     * returning null: unlike EMAIL/SMS, there's no field on
-     * {@link CustomerClientResponse} for a push token yet at all, so
-     * reaching this branch would mean a PushProvider got registered before
-     * this method (and the customerclient response shape) was updated for
-     * it — a real gap worth failing loudly on, not silently sending
-     * nowhere.
+     * recorded as FAILED. The PUSH case returns {@code pushToken()}, same
+     * shape as EMAIL/SMS — but see {@link CustomerClientResponse}'s own
+     * Javadoc: customer-service doesn't expose a push token field yet at
+     * all, so this will always evaluate to {@code null} today, meaning
+     * every PUSH-opted-in customer takes the same "no address on file,
+     * skip" path SMS-without-a-phone-number already takes. That's a
+     * deliberate, safe default — not a bug to fix here — until
+     * customer-service ships the field this genuinely has something to
+     * read.
      */
     private String recipientAddressFor(CustomerClientResponse customer, NotificationChannel channel) {
         return switch (channel) {
             case EMAIL -> customer.email();
             case SMS -> customer.phone();
-            case PUSH -> throw new IllegalStateException(
-                    "No recipient-address mapping for channel " + channel + " yet");
+            case PUSH -> customer.pushToken();
         };
     }
 

@@ -66,6 +66,12 @@
 		     same as this file's other pinned third-party versions. -->
 		<twilio.version>12.1.1</twilio.version>
 		<jjwt.version>0.13.0</jjwt.version>
+		<!-- firebase-admin's latest stable release as of this addition — check
+		     https://github.com/firebase/firebase-admin-java/releases before
+		     bumping, same as this file's other pinned third-party versions.
+		     See FcmConfig's own Javadoc for why this dependency is present
+		     but the feature it enables is off by default. -->
+		<firebase-admin.version>9.10.0</firebase-admin.version>
 	</properties>
 
 	<dependencyManagement>
@@ -97,6 +103,20 @@
 			<groupId>com.twilio.sdk</groupId>
 			<artifactId>twilio</artifactId>
 			<version>${twilio.version}</version>
+		</dependency>
+		<!--
+		    §5's push channel — see FcmConfig/FcmPushProvider's own Javadoc
+		    for why this dependency is present but inert by default
+		    (app.notification.push.enabled=false), unlike twilio above which
+		    is fully live. Pulling this in doesn't cost anything at
+		    startup when the feature is disabled — FcmConfig (the only class
+		    that touches FirebaseApp.initializeApp) is itself conditional on
+		    that same property.
+		-->
+		<dependency>
+			<groupId>com.google.firebase</groupId>
+			<artifactId>firebase-admin</artifactId>
+			<version>${firebase-admin.version}</version>
 		</dependency>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>

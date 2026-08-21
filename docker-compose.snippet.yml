@@ -56,6 +56,14 @@
       TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:?TWILIO_ACCOUNT_SID is required}
       TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:?TWILIO_AUTH_TOKEN is required}
       TWILIO_FROM_NUMBER: ${TWILIO_FROM_NUMBER:?TWILIO_FROM_NUMBER is required}
+      # PUSH_NOTIFICATIONS_ENABLED/FCM_* — deliberately NOT wired the same
+      # way as TWILIO_* above (no :?required). §5's push channel is off by
+      # default and has nothing to send to yet regardless (see
+      # FcmPushProvider's own Javadoc) — omit both entirely for a normal
+      # local run; only set them once customer-service ships a push-token
+      # field and you specifically want to exercise this channel.
+      # PUSH_NOTIFICATIONS_ENABLED: "true"
+      # FCM_SERVICE_ACCOUNT_JSON_BASE64: <base64 of your FCM service account JSON>
       ORDER_SERVICE_BASE_URL: http://app:8080/api/v1
       AUTH_SERVICE_JWKS_URI: http://app:8080/.well-known/jwks.json
       CUSTOMER_SERVICE_URL: http://customer-service:8083/api/v1

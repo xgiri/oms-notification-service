@@ -1,0 +1,1 @@
+We'll notify you again once order #[(${orderId})] ships. Manage preferences: [(${unsubscribeUrl})]
