@@ -17,14 +17,12 @@ public class NotificationPreferenceServiceImpl implements NotificationPreference
 
     @Override
     public boolean isOptedIn(Long customerId, NotificationType type, NotificationChannel channel) {
-        // A transactional type ignores an opt-out entirely for now (see
-        // NotificationType's own Javadoc) — this is a placeholder legal
-        // stance, not a researched one; get real legal sign-off on which
-        // transactional types genuinely can't be opted out of vs. which
-        // merely default to opted-in, before relying on this in a real
-        // deployment. Marketing (non-transactional) types, once any exist,
-        // would skip this early return and always defer to the stored
-        // preference below.
+        // A transactional type ignores an opt-out entirely — see
+        // NotificationType's own Javadoc for the classification reasoning
+        // and its own caveat that this isn't a substitute for actual legal
+        // sign-off. CUSTOMER_WELCOME is the one type that's genuinely
+        // non-transactional today, so it's also the one type that ever
+        // reaches the stored-preference check below.
         if (type.isTransactional()) {
             return true;
         }

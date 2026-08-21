@@ -3,8 +3,9 @@
 This maps every one of the 12 sections from the original notification-service
 plan to what's actually been built, as of Phase 4 (SMS), the
 `CustomerWelcome` and `ShipmentNotificationConsumer` consumers (**Phase 3
-is now fully complete**), the `CustomerClient`/`OrderClient` contract
-tests, and the §6 retry/DLQ scheduler.
+is now fully complete**), real per-type opt-out enforcement
+(**Phase 2 is now fully complete**), the `CustomerClient`/`OrderClient`
+contract tests, and the §6 retry/DLQ scheduler.
 Status tags: **✅ Done**, **🟡 Partial**, **⬜ Not started**.
 
 ---
@@ -166,17 +167,23 @@ as a product decision to make later, not to build speculatively.
 must work even if the rest of the system is down. Transactional vs.
 marketing distinction modeled from the start, not retrofitted.
 
-**Status: 🟡 Partial**
+**Status: ✅ Done**
 - ✅ `notification_preferences` table, real for both EMAIL and SMS as of
   Phase 4
 - ✅ Unsubscribe endpoint — signed HMAC token, stateless, not
   JWT-authenticated, works independent of Kafka/other services being up —
   built to spec
 - ✅ `transactional: true/false` modeled on `NotificationType` from day one
-- ⬜ Every type is currently `transactional = true` as a placeholder —
-  opt-out enforcement is short-circuited to "always send" regardless of a
-  stored preference, pending real legal sign-off on which types can
-  actually be opted out of
+- ✅ Enforcement is now real, not a placeholder — `CUSTOMER_WELCOME` is
+  `transactional = false` and its opt-out is genuinely enforced
+  (`NotificationPreferenceServiceImplTest` covers the no-row/opted-in
+  default, a stored opt-out, and a stored opt-in). Every
+  order/payment/shipment type stays `transactional = true`, matching
+  CAN-SPAM's own carve-out for transactional/relationship messages.
+  ⚠️ This classification is the common industry-standard reading, applied
+  as a starting position — it is NOT a substitute for actual legal
+  sign-off before relying on it in a real deployment. See
+  `NotificationType`'s own Javadoc for the full reasoning.
 
 ## §8 — Data model
 
@@ -255,8 +262,14 @@ prioritize writing *first*. Template rendering tests per locale/channel.
   is what actually catches a template-resolution regression
 - ✅ Idempotency test — built and prioritized exactly as the plan asked,
   its own nested test class
-- ✅ Preference/opt-out logic — covered (`PreferenceEnforcement` nested
-  class)
+- ✅ Preference/opt-out logic — covered twice now, at two different
+  layers: `PreferenceEnforcement` (in `NotificationServiceImplTest`)
+  covers the orchestration behavior against a *mocked*
+  `NotificationPreferenceService`; `NotificationPreferenceServiceImplTest`
+  (new) is the first test of that service's own real branching logic —
+  the transactional short-circuit (zero repository calls) and
+  `CUSTOMER_WELCOME`'s genuine opt-out enforcement, now that a real
+  non-transactional type exists to exercise it against.
 - 🟡 Provider testing is real but **not literally WireMock-based** as the
   plan specified: `TwilioSmsProviderTest` exercises the resilience/retry
   logic against a mocked `SmsSender` seam instead. **This was actively
@@ -327,7 +340,7 @@ prioritize writing *first*. Template rendering tests per locale/channel.
 The plan's own 5-phase rollout sequence, and where each stands:
 
 1. **Scaffold + one channel, one event type** — ✅ Done. Email, `OrderConfirmed` only, proved the skeleton end to end.
-2. **Preferences + opt-out, before more event types** — 🟡 Partial. Signed unsubscribe token done; per-type enforcement still a placeholder pending legal sign-off.
+2. **Preferences + opt-out, before more event types** — ✅ Done. Signed unsubscribe token done; per-type enforcement is now real (`CUSTOMER_WELCOME` opt-out-able, order/payment/shipment stay required) — see §7.
 3. **Remaining event types on email** — ✅ Done. `OrderCancelled`, `PaymentConfirmed`, `PaymentFailed`, `CustomerWelcome`, `ShipmentShipped`, `ShipmentDelivered`, `ShipmentReturned` all done — every event type in the plan's original §2 table is now wired.
 4. **Additional channels (SMS, push)** — 🟡 Partial. SMS fully done (`TwilioSmsProvider`, templates, multi-channel fan-out in `NotificationServiceImpl`). Push not started — blocked on a `customer-service` schema change (no push-token field exists yet).
 5. **Infra parity** — ✅ Done. k8s manifests (web/worker split, KEDA-driven worker autoscaling on consumer lag + retry backlog, PDBs, PodMonitor), Prometheus scrape target, and a Grafana dashboard with real notification-specific metrics (sent/failed/dead-lettered by channel and type, retry-queue depth, provider send latency, via the new `NotificationMetrics` class) are all built — see `k8s/README.md`. Only exception: no time-to-delivery panel, a deliberate deferral pending a `processEvent` signature change — see §10.
@@ -344,12 +357,12 @@ The plan's own 5-phase rollout sequence, and where each stands:
 | 4 | Composition | ✅ Done |
 | 5 | Provider abstraction | 🟡 Partial |
 | 6 | Delivery reliability | ✅ Done |
-| 7 | Preferences & compliance | 🟡 Partial |
+| 7 | Preferences & compliance | ✅ Done |
 | 8 | Data model | ✅ Done |
 | 9 | API surface | ✅ Done |
 | 10 | Observability | ✅ Done (time-to-delivery deliberately deferred) |
 | 11 | Testing strategy | 🟡 Partial |
-| 12 | Build phases | 🟡 Partial (3 of 5 phases fully closed) |
+| 12 | Build phases | 🟡 Partial (4 of 5 phases fully closed) |
 
 **§6's retry/DLQ gap is now closed** — `NotificationRetryScheduler` polls
 `FAILED` notifications and either retries them (via the existing `resend`

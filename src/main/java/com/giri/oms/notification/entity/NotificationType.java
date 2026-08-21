@@ -10,12 +10,17 @@ package com.giri.oms.notification.entity;
  * {@code transactional} exists here, not as a later retrofit, because it's
  * a legal distinction (CAN-SPAM/GDPR), not just a product one: a
  * transactional notification ("your order shipped") generally can't be
- * opted out of the same way a marketing one can. Every type here is
- * transactional today — there are no marketing notification types yet — but
- * the field exists so adding one doesn't mean redesigning
- * NotificationPreference's enforcement logic (see
- * NotificationPreferenceService) to discover this distinction for the first
- * time under time pressure.
+ * opted out of the same way a marketing one can.
+ * <p>
+ * As of this classification pass, every order/payment/shipment type stays
+ * {@code true} — each is a status update tied to a specific transaction the
+ * customer initiated, matching CAN-SPAM's own carve-out for transactional
+ * or relationship messages. {@link #CUSTOMER_WELCOME} is the one exception,
+ * now {@code false}: it isn't tied to any specific transaction (it fires
+ * once, at signup) and is the conventional place a catalog like this one
+ * draws the opt-out line. This still isn't a substitute for actual legal
+ * sign-off before relying on it in a real deployment — it's the common
+ * industry-standard reading, applied here as a starting position.
  */
 public enum NotificationType {
     ORDER_CONFIRMED(true),
@@ -25,7 +30,7 @@ public enum NotificationType {
     SHIPMENT_SHIPPED(true),
     SHIPMENT_DELIVERED(true),
     SHIPMENT_RETURNED(true),
-    CUSTOMER_WELCOME(true);
+    CUSTOMER_WELCOME(false);
 
     private final boolean transactional;
 

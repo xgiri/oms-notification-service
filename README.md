@@ -233,12 +233,14 @@ secret is simpler and sufficient. No cross-repo change was needed.
   state. Absence of a row means opted-in. Real for both `EMAIL` and `SMS`
   now that Phase 4 registered a second provider — see
   [Multi-channel fan-out](#multi-channel-fan-out-phase-4-and-what-changed-to-support-it)
-  above. Every `NotificationType` today is still `transactional = true`
-  (see that enum's own Javadoc on the CAN-SPAM/GDPR reasoning), which
-  currently means opt-out is ignored for all of them regardless of
-  channel — get real legal sign-off on which types genuinely can't be
-  opted out of before relying on that placeholder stance in a real
-  deployment.
+  above. Order/payment/shipment types stay `transactional = true` (see that
+  enum's own Javadoc on the CAN-SPAM/GDPR reasoning) and ignore opt-out
+  entirely; `CUSTOMER_WELCOME` is now `transactional = false`, the first
+  type where opt-out is actually enforced — see
+  `NotificationPreferenceServiceImplTest` for the real behavior. This
+  classification is the common industry-standard reading, applied as a
+  starting position — get real legal sign-off before relying on it in a
+  real deployment.
 
 No outbox table — this service has no producer role yet (see
 `notification.service`'s package-info). Add one the same way
@@ -352,6 +354,15 @@ to the order that triggered it). Not built in Phase 1.
   and (new in Phase 4) SMS-specific cases: `htmlBody` comes back `null`
   (not empty) for SMS, and a missing SMS template throws the same way a
   missing EMAIL template does.
+- `NotificationPreferenceServiceImplTest` — the first real unit test of
+  this class's own `isOptedIn` branching logic (previously only exercised
+  indirectly, via a mocked `NotificationPreferenceService` in
+  `NotificationServiceImplTest`): a transactional type short-circuits to
+  opted-in with zero repository calls; `CUSTOMER_WELCOME` genuinely defers
+  to the stored preference, covering no-row (defaults opted-in), a stored
+  opt-out, and a stored opt-in; `optOut` itself covers both creating a new
+  row and idempotently flipping an existing one rather than duplicating
+  it.
 - `UnsubscribeTokenServiceTest` — round-trips a real token through the real
   generate/parse path (no mocked jjwt): a customer/type/channel survives
   the round trip, a token signed with a different secret is rejected, an
@@ -391,11 +402,15 @@ Run `./mvnw test` before trusting either fully.
 ## Build phases
 
 This is the staged plan the whole service was scoped from. **Phase 1 is
-fully built. Phase 2 is partially built** — the signed unsubscribe-token
-piece is done; the other Phase 2 item (real per-type opt-out enforcement,
-currently short-circuited for every type since all are `transactional`)
-is still open, pending legal sign-off on which types genuinely can't be
-opted out of. **Phase 3 is now fully wired** —
+fully built. Phase 2 is now fully built** — the signed unsubscribe-token
+piece is done, and real per-type opt-out enforcement is done too:
+`CUSTOMER_WELCOME` is now `transactional = false` and its opt-out is
+genuinely enforced; every order/payment/shipment type stays
+`transactional = true` and ignores opt-out, matching CAN-SPAM's own
+carve-out for transactional/relationship messages — see
+`NotificationType`'s own Javadoc for the reasoning and its caveat that this
+is a starting position, not a substitute for actual legal sign-off.
+**Phase 3 is now fully wired** —
 `OrderConfirmed`/`OrderCancelled`/`PaymentConfirmed`/`PaymentFailed`/
 `CustomerWelcome` are all done on the email channel; **shipment lifecycle
 events are now done too — Phase 3 is fully complete.** **Phase 4 is in
@@ -411,12 +426,17 @@ infra-parity checklist (Phase 5) are still ahead.
    - **Done:** the unsubscribe endpoint is now signed-token-based — see
      [API](#api) and `security.UnsubscribeTokenService`. No more raw,
      guessable query parameters.
-   - **Still open:** enforcement itself is a placeholder — every
-     `NotificationType` is `transactional = true`, so
-     `NotificationPreferenceServiceImpl.isOptedIn` short-circuits to `true`
-     regardless of a stored preference. Get real legal sign-off (CAN-SPAM/
-     GDPR) on which types genuinely can't be opted out of before relying on
-     this in a real deployment — see that class's own Javadoc.
+   - **Done:** enforcement itself is real now — `CUSTOMER_WELCOME` is
+     `transactional = false`, so `NotificationPreferenceServiceImpl.isOptedIn`
+     genuinely defers to the stored preference for that type (verified in
+     `NotificationPreferenceServiceImplTest`, the first real unit test of
+     this class's branching logic). Every order/payment/shipment type
+     stays `transactional = true` and ignores opt-out — matches CAN-SPAM's
+     own carve-out for transactional/relationship messages, but this
+     classification is the common industry-standard reading, not
+     researched legal advice — get real sign-off before relying on it in a
+     real deployment. See `NotificationType`'s own Javadoc for the full
+     reasoning.
 3. **Remaining event types** on the email channel.
    - **Done:** `OrderCancelled` — folded into the renamed
      `notification.consumer.OrderNotificationConsumer` (formerly
@@ -500,12 +520,13 @@ at its point of origin in code:
 - **Internal service auth is a placeholder on both ends** — see
   [Security](#security). Neither this service's own implementation nor the
   receiving services' acceptance of it is production-grade.
-- **Every notification type is un-opt-out-able (transactional) as a
-  placeholder stance** — see [Build phases](#build-phases)' Phase 2 note and
-  `NotificationPreferenceServiceImpl.isOptedIn`. Real per-type legal
-  sign-off is still needed; the unsubscribe *token* itself is fixed (see
-  below), but opting out currently has no effect for any type that exists
-  today. This applies identically across both channels.
+- **Per-type opt-out classification is a starting position, not legal
+  advice** — see [Build phases](#build-phases)' Phase 2 note and
+  `NotificationType`'s own Javadoc. `CUSTOMER_WELCOME` opt-out is now
+  genuinely enforced; order/payment/shipment types stay un-opt-out-able.
+  This is the common industry-standard reading, applied here without
+  actual legal review — get real sign-off before relying on it in a real
+  deployment. Applies identically across both channels.
 - **`resend` reconstructs template variables from stored columns only** —
   fine for most types, but genuinely under-populates `ShipmentShipped`
   (the stored row has no `trackingNumber` column — see
@@ -533,7 +554,8 @@ history isn't lost, not as open items): contract/resilience tests for
 `NotificationRetryScheduler`) is now built; Kubernetes manifests, a
 Prometheus scrape target, and a Grafana dashboard (Phase 5) are all now
 built (see `k8s/README.md`); all shipment lifecycle events are now wired
-(this closes Phase 3 entirely).
+(this closes Phase 3 entirely); `CUSTOMER_WELCOME` opt-out is now
+genuinely classified and enforced (this closes Phase 2 entirely).
 
 **Fixed this session:** the unsubscribe endpoint's signed-token gap — see
 [API](#api) and `security.UnsubscribeTokenService`.
