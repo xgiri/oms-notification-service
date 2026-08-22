@@ -1,8 +1,9 @@
 # notification-service — Build Plan & Status
 
 This maps every one of the 12 sections from the original notification-service
-plan to what's actually been built, as of Phase 4 (SMS, and now push as far
-as this repo alone can build it — see §5), the
+plan to what's actually been built, as of Phase 4 (SMS, and push — fully
+built here and its `customer-service` dependency now shipped too, see §5),
+the
 `CustomerWelcome` and `ShipmentNotificationConsumer` consumers (**Phase 3
 is now fully complete**), real per-type opt-out enforcement
 (**Phase 2 is now fully complete**), the `CustomerClient`/`OrderClient`
@@ -150,11 +151,18 @@ instance.
   `THIRD_PARTY_AUTH_ERROR`) not retrying, a transient one (`QUOTA_EXCEEDED`)
   retrying, and a null error code (no structured FCM response at all)
   treated as transient.
-  **What's still genuinely missing, and can't be built from this side:** a
-  device push token to send to at all. `customer-service` doesn't expose
-  one — not a client-side gap, the data doesn't exist upstream. This
-  remains the actual blocker on Phase 4 being complete; see this doc's
-  closing summary.
+  **What was the last genuine gap — a device push token to send to at
+  all — is now closed on the upstream side too.** `customer-service`
+  shipped `pushToken` (`V4__add_push_token_to_customers.sql`, exposed on
+  `CustomerResponse`, set via its own dedicated
+  `PUT /customers/{id}/push-token` endpoint — deliberately not folded
+  into the general customer update, same reasoning as this service's own
+  `TwilioSmsProvider`/`FcmPushProvider` split into single-purpose pieces).
+  Push is still gated off here (`app.notification.push.enabled=false`,
+  both in `application.properties` and `k8s/00-configmap.yaml`) — but
+  that's now a deliberate, reversible deploy-time decision (flip the flag
+  once real FCM credentials are configured), not a wait on missing data.
+  See this doc's closing summary.
 
 ## §6 — Delivery reliability
 
@@ -430,7 +438,7 @@ The plan's own 5-phase rollout sequence, and where each stands:
 1. **Scaffold + one channel, one event type** — ✅ Done. Email, `OrderConfirmed` only, proved the skeleton end to end.
 2. **Preferences + opt-out, before more event types** — ✅ Done. Signed unsubscribe token done; per-type enforcement is now real (`CUSTOMER_WELCOME` opt-out-able, order/payment/shipment stay required) — see §7.
 3. **Remaining event types on email** — ✅ Done. `OrderCancelled`, `PaymentConfirmed`, `PaymentFailed`, `CustomerWelcome`, `ShipmentShipped`, `ShipmentDelivered`, `ShipmentReturned` all done — every event type in the plan's original §2 table is now wired.
-4. **Additional channels (SMS, push)** — 🟡 Partial. SMS fully done (`TwilioSmsProvider`, templates, multi-channel fan-out in `NotificationServiceImpl`). Push (`FcmPushProvider`) is now built — see §5 — but deliberately gated off (`app.notification.push.enabled=false`) since `customer-service` doesn't expose a push token to send to yet; that field is the one remaining blocker, not missing code here.
+4. **Additional channels (SMS, push)** — 🟡 Partial. SMS fully done (`TwilioSmsProvider`, templates, multi-channel fan-out in `NotificationServiceImpl`). Push (`FcmPushProvider`) is fully built and its upstream dependency is resolved — `customer-service` now exposes `pushToken` (see §5) — but still deliberately gated off (`app.notification.push.enabled=false`) pending real FCM credentials and a deliberate decision to flip the flag. No code or data blocker remains; this is now purely an operational go/no-go.
 5. **Infra parity** — ✅ Done. k8s manifests (web/worker split, KEDA-driven worker autoscaling on consumer lag + retry backlog, PDBs, PodMonitor), Prometheus scrape target, and a Grafana dashboard with real notification-specific metrics (sent/failed/dead-lettered by channel and type, retry-queue depth, provider send latency, and now time-to-delivery, via the `NotificationMetrics` class) are all built — see `k8s/README.md`.
 
 ---
@@ -443,7 +451,7 @@ The plan's own 5-phase rollout sequence, and where each stands:
 | 2 | Event consumption | ✅ Done |
 | 3 | Recipient resolution | ✅ Done |
 | 4 | Composition | ✅ Done |
-| 5 | Provider abstraction | ✅ Done (push functionally inert pending a `customer-service` field) |
+| 5 | Provider abstraction | ✅ Done (push gated off pending FCM credentials/a deploy decision — not missing data) |
 | 6 | Delivery reliability | ✅ Done |
 | 7 | Preferences & compliance | ✅ Done |
 | 8 | Data model | ✅ Done |
@@ -484,19 +492,20 @@ things worth flagging about this work overall:
    Grafana panel, added in the same pass.
 
 **What's newly the most consequential open item:** §5's push provider is
-now built AND tested as far as this repo alone can take it — the actual
-remaining blocker on Phase 4 has narrowed to one specific thing: a
-`customer-service` schema change to expose a device push token. Unlike
-everything else closed in this session, that one piece is a genuine
-cross-repo change, not something more work here can close. §11's last
-gap (`FcmPushProviderTest`) is closed the same way `TwilioSmsProviderTest`
+now built AND tested as far as this repo alone can take it, AND its
+cross-repo blocker is resolved — `customer-service` shipped `pushToken`
+(schema, endpoint, and response field), closing the one piece that
+genuinely couldn't be built from this repo alone. §11's last gap
+(`FcmPushProviderTest`) is closed the same way `TwilioSmsProviderTest`
 closed its SMS equivalent — see §5/§11 above for the one real difference
 between them (no public `FirebaseMessagingException` constructor to work
 with). The `NotificationService#resend` precondition bug (found while
 building §6) is now fixed — see §6 above. The time-to-delivery metric
 (found while building §10) is now built too, including its own Grafana
-panel — see §10. With that closed, §5's push provider being blocked on
-`customer-service`'s schema change is the only genuinely open item left in
-this entire doc that isn't a deliberate product-decision deferral (§5's
-push-fallback question, §11's WireMock-for-Twilio/FCM decision) or already
-resolved.
+panel — see §10. With all of that closed, **there is no remaining code or
+data gap anywhere in this doc** — Phase 4's only open item is now a
+deliberate operational decision (flip `app.notification.push.enabled`
+once real FCM credentials are configured), not a wait on more work.
+Everything else still open (§5's push-fallback question, §11's
+WireMock-for-Twilio/FCM decision) is a deliberate product decision, not a
+gap.

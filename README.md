@@ -7,13 +7,15 @@ every convention this system already established: same package layout,
 same JWT-verification-only security posture, same resilient-client pattern,
 same web/worker-role convention.
 
-**Current status: Phase 4 fully complete on the code side — three
-channels wired (email, SMS, push), all eight event types on each.** Push
-is code-complete but disabled by default (`app.notification.push.enabled=false`)
-pending a `customer-service` schema change — see
-[Additional channels](#build-phases). **Phases 1–3 and the time-to-delivery
-metric (§10) are also fully complete.** See [Build phases](#build-phases)
-for the full staged plan and exactly what's implemented vs. planned.
+**Current status: fully complete, no remaining code or data gap** — three
+channels wired (email, SMS, push), all eight event types on each. Push is
+code-complete AND its upstream dependency shipped
+(`customer-service` now exposes `pushToken`), but stays disabled by
+default (`app.notification.push.enabled=false`) pending real FCM
+credentials — a deliberate operational decision, not a wait on more work.
+See [Additional channels](#build-phases). **Phases 1–5, including the
+time-to-delivery metric, are all fully complete.** See
+[Build phases](#build-phases) for the full staged plan.
 
 ## What it does
 
@@ -184,6 +186,24 @@ real Twilio credentials — twilio-java owns its HTTP client internally, so
 there's no clean base-URL override to point at WireMock the way
 `CustomerClient`/`OrderClient`'s plain `RestClient` allows. See
 [Testing](#testing) for what that tradeoff does and doesn't cover.
+
+**`FcmPushProvider`** is the third `NotificationProvider` implementation
+— structurally a mirror of `TwilioSmsProvider` (same programmatic
+resilience4j composition, same never-throw contract, same
+permanent-vs-transient split decided inside `doSend` rather than via
+resilience4j's `ignore-exceptions`), behind the same one-method-seam
+pattern (`PushSender`/`FcmPushSender`) for the same testability reason.
+Unlike `TwilioSmsProvider`, it's **not registered unconditionally** —
+`@ConditionalOnProperty(name = "app.notification.push.enabled", havingValue = "true")`,
+default `false` — because `FcmConfig` needs real FCM service-account
+credentials to initialize `FirebaseApp` at startup, with no safe default;
+registering it unconditionally would mean every environment (every
+developer's local run, CI, this repo's own tests) needs real credentials
+just to boot, for a channel that can't do anything useful yet regardless
+(`CustomerClientResponse#pushToken()` is always `null` until
+`customer-service` ships that field). See that class's own Javadoc for
+the full reasoning and the exact activation path once the upstream field
+exists.
 
 ## API
 
@@ -437,12 +457,14 @@ is a starting position, not a substitute for actual legal sign-off.
 `OrderConfirmed`/`OrderCancelled`/`PaymentConfirmed`/`PaymentFailed`/
 `CustomerWelcome` are all done on the email channel; **shipment lifecycle
 events are now done too — Phase 3 is fully complete.** **Phase 4 is now
-fully complete on the code side** — SMS is done for all eight wired event
-types, and push (`FcmPushProvider`) is built for all eight too, gated
-behind `app.notification.push.enabled=false` pending a `customer-service`
-schema change (see item 4 below). **Phase 5 (infra parity) is also fully
-complete**, including the time-to-delivery Grafana panel — see item 5
-below.
+fully complete, with no remaining code or data gap** — SMS is done for
+all eight wired event types, and push (`FcmPushProvider`) is built for
+all eight too. `customer-service` has since shipped the `pushToken` field
+push depends on, so the only thing left is a deliberate operational
+decision (real FCM credentials + flipping
+`app.notification.push.enabled=true`), not more work — see item 4 below.
+**Phase 5 (infra parity) is also fully complete**, including the
+time-to-delivery Grafana panel — see item 5 below.
 
 1. **Scaffold + one channel, one event type** *(this build)* — email only,
    `OrderConfirmed` only. Proves the skeleton (Kafka consumer, idempotency,
@@ -521,18 +543,23 @@ below.
      above), SMS templates for all eight wired event types, and
      `NotificationServiceImpl`'s fan-out rewrite so a customer opted into
      both channels gets both, not just email.
-   - **Done, but gated off:** push — `FcmPushProvider` (mirrors
-     `TwilioSmsProvider`'s resilience4j composition and never-throw
-     contract), a `<type>_push_en.txt` template for all eight event types
-     (the title reuses `NotificationComposerImpl#subjectFor`'s existing
-     subject line rather than adding a `NotificationRequest` field just for
-     push), and a `pushToken` field added to `CustomerClientResponse` ahead
-     of the schema it depends on. Disabled by default
-     (`app.notification.push.enabled=false`) because `customer-service`
-     doesn't expose a device push token yet — this is a genuine cross-repo
-     blocker, not missing code here. Flipping the flag plus real FCM
-     credentials is the entire remaining activation path once that field
-     ships. See `FcmPushProvider`'s own Javadoc for the full reasoning.
+   - **Done, and its upstream dependency has now shipped:** push —
+     `FcmPushProvider` (mirrors `TwilioSmsProvider`'s resilience4j
+     composition and never-throw contract), a `<type>_push_en.txt`
+     template for all eight event types (the title reuses
+     `NotificationComposerImpl#subjectFor`'s existing subject line rather
+     than adding a `NotificationRequest` field just for push), and a
+     `pushToken` field on `CustomerClientResponse`. `customer-service` has
+     since shipped the schema it depends on
+     (`V4__add_push_token_to_customers.sql`, exposed on
+     `CustomerResponse`, set via a dedicated
+     `PUT /customers/{id}/push-token` endpoint — kept separate from the
+     general customer-update endpoint, same single-purpose-endpoint
+     reasoning as this service's own provider classes). Still disabled by
+     default (`app.notification.push.enabled=false`) — but that's now a
+     deliberate, reversible deploy-time decision (real FCM credentials +
+     flipping the flag), not a wait on missing data. See
+     `FcmPushProvider`'s own Javadoc for the full reasoning.
 5. **Infra parity** — Kubernetes manifests, Prometheus scrape target,
    Grafana dashboard, same checklist `shipment-service`'s own Stage 7
    established. **Done** — web/worker split, KEDA-driven worker autoscaling
@@ -580,13 +607,6 @@ at its point of origin in code:
   [Multi-channel fan-out](#multi-channel-fan-out-phase-4-and-what-changed-to-support-it)
   for the reasoning and why it's worth revisiting if it turns out to hide
   a real data-quality problem. Applies to push the same way, once enabled.
-- **Push is code-complete but disabled by default** —
-  `app.notification.push.enabled=false` because `customer-service` doesn't
-  expose a device push token yet; `CustomerClientResponse.pushToken()`
-  always deserializes to `null` until that ships. This is a genuine
-  cross-repo blocker, not missing code here — see `FcmPushProvider`'s own
-  Javadoc and [Additional channels](#build-phases) above for the full
-  activation path once the field exists.
 - **No true HTTP-contract test for `TwilioSmsSender`/`FcmPushSender`** —
   `TwilioSmsProviderTest`/`FcmPushProviderTest` cover this service's own
   retry/classification logic against a mock; nothing yet catches a real
@@ -604,8 +624,11 @@ built (see `k8s/README.md`); all shipment lifecycle events are now wired
 genuinely classified and enforced (this closes Phase 2 entirely); the
 time-to-delivery metric and its Grafana panel are now built (closing the
 one gap §10 had left); the push channel (`FcmPushProvider`) is now built
-end to end, gated behind a feature flag pending `customer-service`'s
-schema change (this closes Phase 4 on the code side). Earlier still: the
+end to end, and `customer-service` has since shipped the `pushToken`
+schema it depends on (this closes Phase 4 entirely — the only thing left
+is the deliberate operational decision to flip
+`app.notification.push.enabled=true` once real FCM credentials exist,
+not a code or data gap). Earlier still: the
 unsubscribe endpoint's signed-token fix (`security.UnsubscribeTokenService`)
 and the original SMS channel build (`TwilioSmsProvider`, the `SmsSender`
 seam, `NotificationServiceImpl`'s multi-channel fan-out rewrite).

@@ -12,19 +12,26 @@ package com.giri.oms.customerclient.dto;
  * service was scoped from). Not customer-service's full response shape —
  * address, status, createdAt/updatedAt are still left out.
  * <p>
- * {@code pushToken} (§5's push channel) is a genuine exception to "only
- * what this caller actually uses" above: customer-service does NOT expose
- * a device push token field yet at all — this isn't a client-side gap, the
- * data doesn't exist upstream. The field is declared here anyway, ahead of
- * that schema change, so this record's shape is already correct and this
- * won't need touching again once customer-service ships it — but until
- * then it will always deserialize to {@code null} (an absent JSON field
- * simply doesn't populate a record component). See
- * {@code NotificationServiceImpl#recipientAddressFor}'s PUSH case, which
- * already treats a {@code null} here as "no address on file" and skips the
- * channel — the same path a customer with no phone on file already takes
- * for SMS — and {@code FcmPushProvider}'s own Javadoc for why the provider
- * built against this field is disabled by default regardless.
+ * {@code pushToken} (§5's push channel) was declared here ahead of
+ * customer-service's own schema change, specifically so this record's
+ * shape would already be correct and wouldn't need touching again once
+ * that field shipped. It has since shipped —
+ * {@code V4__add_push_token_to_customers.sql}, exposed on
+ * customer-service's own {@code CustomerResponse}, set via a dedicated
+ * {@code PUT /customers/{id}/push-token} endpoint (kept separate from the
+ * general customer-update endpoint, same single-purpose-endpoint
+ * reasoning as this service's own provider classes) — so this field now
+ * genuinely deserializes a real device token for any customer who has
+ * registered one, the same way {@code phone} always has. A customer who
+ * hasn't registered one yet still deserializes this to {@code null},
+ * which remains a normal "no address on file for this channel" case, not
+ * an error — see {@code NotificationServiceImpl#recipientAddressFor}'s
+ * PUSH case, which already treats a {@code null} here as "no address on
+ * file" and skips the channel, the same path a customer with no phone on
+ * file already takes for SMS. Whether this field is ever actually SENT to
+ * is separately gated by {@code FcmPushProvider} being registered at all
+ * — see that class's own Javadoc for why it stays disabled by default
+ * regardless of this field now being populated correctly.
  */
 public record CustomerClientResponse(
         Long id,

@@ -15,33 +15,30 @@ import org.springframework.stereotype.Component;
 import java.util.function.Supplier;
 
 /**
- * §5's push channel — built as far as it can be, given this session's
- * scope decision to build the notification-service side of push now
- * without waiting on the customer-service change it depends on (see this
- * service's plan-status doc §5). Structurally a mirror of
- * {@code TwilioSmsProvider}: same programmatic resilience4j composition
- * (own {@link CircuitBreaker}/{@link Retry} pulled from the registry by
- * instance name, decorated around a {@link Supplier}), same never-throw
- * {@link NotificationProvider} contract, same permanent-vs-transient split
- * decided inside {@link #doSend} rather than via resilience4j
- * {@code ignore-exceptions} — see that class's own Javadoc for the shared
- * reasoning, not repeated here.
+ * §5's push channel. Structurally a mirror of {@code TwilioSmsProvider}:
+ * same programmatic resilience4j composition (own {@link CircuitBreaker}/
+ * {@link Retry} pulled from the registry by instance name, decorated
+ * around a {@link Supplier}), same never-throw {@link NotificationProvider}
+ * contract, same permanent-vs-transient split decided inside
+ * {@link #doSend} rather than via resilience4j {@code ignore-exceptions}
+ * — see that class's own Javadoc for the shared reasoning, not repeated
+ * here.
  * <p>
  * <b>Deliberately gated behind {@code app.notification.push.enabled}
  * (default {@code false})</b> — unlike {@code TwilioSmsProvider}, this
- * can't safely be registered unconditionally yet. The reason isn't "the
- * code doesn't work" — it's that {@code FcmConfig} needs real FCM service
- * account credentials to initialize {@code FirebaseApp} at startup, with
- * no safe default (same posture as {@code TwilioConfig}'s Twilio
- * credentials). Registering this provider unconditionally would mean
- * every environment — every developer's local run, CI, this repo's own
- * tests — would need real FCM credentials configured just to boot the
- * application, for a channel that can't do anything useful yet regardless
- * (see {@link CustomerClientResponse#pushToken()}'s own Javadoc: it's
- * always {@code null} until customer-service ships the field). Flipping
- * {@code app.notification.push.enabled=true} once that upstream change
- * ships, plus real credentials, is the entire activation path — no other
- * code change needed here.
+ * isn't registered unconditionally. This is no longer a wait on missing
+ * upstream data — {@code customer-service} has since shipped the
+ * {@code pushToken} field this provider needs (see
+ * {@link CustomerClientResponse#pushToken()}'s own Javadoc) — it's purely
+ * that {@code FcmConfig} needs real FCM service-account credentials to
+ * initialize {@code FirebaseApp} at startup, with no safe default (same
+ * posture as {@code TwilioConfig}'s Twilio credentials). Registering this
+ * provider unconditionally would mean every environment — every
+ * developer's local run, CI, this repo's own tests — would need real FCM
+ * credentials configured just to boot the application. Flipping
+ * {@code app.notification.push.enabled=true} once real credentials are
+ * configured is the entire remaining activation step — no code or data
+ * change needed here anymore.
  */
 @Slf4j
 @Component
