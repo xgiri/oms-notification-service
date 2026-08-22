@@ -106,20 +106,20 @@ channel/provider (`SesEmailProvider`, `TwilioSmsProvider`,
 logic; each provider gets its own Resilience4j circuit breaker/retry
 instance.
 
-**Status: 🟡 Partial**
+**Status: ✅ Done** *(functionally inert until a `customer-service` change — see below)*
 - ✅ `NotificationProvider` interface, `SmtpEmailProvider` (Phase 1),
   `TwilioSmsProvider` (Phase 4) — each with its own resilience4j instance
 - ✅ Followed the plan's explicit checklist item: `minimum-number-of-calls`
   set explicitly for `twilioSmsProvider`, learned from the gap found twice
   before
-- 🟡 **`FcmPushProvider` — now built, but deliberately gated off
-  (`app.notification.push.enabled=false` by default) and genuinely
-  untestable end to end.** Built as far as this side of the system can be
-  built without a `customer-service` change — see the paragraph below this
-  table. Structurally a full mirror of `TwilioSmsProvider` (`PushSender`/
-  `FcmPushSender` split, same programmatic resilience4j composition, same
-  permanent-vs-transient classification done inside `doSend` rather than
-  via `ignore-exceptions`, own `fcmPushProvider` resilience4j instance).
+- ✅ **`FcmPushProvider` — built AND tested, deliberately gated off**
+  (`app.notification.push.enabled=false` by default). Built as far as
+  this side of the system can be built without a `customer-service`
+  change — see the paragraph below this table. Structurally a full mirror
+  of `TwilioSmsProvider` (`PushSender`/`FcmPushSender` split, same
+  programmatic resilience4j composition, same permanent-vs-transient
+  classification done inside `doSend` rather than via
+  `ignore-exceptions`, own `fcmPushProvider` resilience4j instance).
   `FcmConfig` initializes `FirebaseApp` at startup, gated behind the same
   property so an unconfigured deployment never needs real FCM credentials
   just to boot. All 8 wired `NotificationType`s now have a
@@ -132,6 +132,24 @@ instance.
   `customer.pushToken()` instead of throwing, so this degrades safely
   (skipped, same as SMS-without-a-phone) rather than crashing the moment
   someone enables the flag before the upstream field exists.
+  **`FcmPushProviderTest` (new) closes what was previously called
+  "genuinely untestable end to end"** — that framing turned out to be
+  imprecise: the resilience/classification logic (the actual thing worth
+  testing, same as `TwilioSmsProviderTest`) *was* testable via the
+  `PushSender` seam, which already existed specifically for this — it
+  just hadn't been written yet. One real wrinkle `TwilioSmsProviderTest`
+  didn't have: `FirebaseMessagingException` has no public constructor at
+  all (verified against firebase-admin `9.10.0`'s actual source — even
+  its `@VisibleForTesting` constructor is package-private and doesn't
+  accept a `MessagingErrorCode`), so every test case mocks the exception
+  itself (`Mockito.mock(FirebaseMessagingException.class)`) rather than
+  constructing a real one — see that test's own Javadoc for the full
+  reasoning and why this still faithfully exercises
+  `FcmPushProvider#isPermanentFailure`. Covers all 4 permanent FCM error
+  codes (`UNREGISTERED`, `INVALID_ARGUMENT`, `SENDER_ID_MISMATCH`,
+  `THIRD_PARTY_AUTH_ERROR`) not retrying, a transient one (`QUOTA_EXCEEDED`)
+  retrying, and a null error code (no structured FCM response at all)
+  treated as transient.
   **What's still genuinely missing, and can't be built from this side:** a
   device push token to send to at all. `customer-service` doesn't expose
   one — not a client-side gap, the data doesn't exist upstream. This
@@ -284,7 +302,7 @@ silently breaks delivery. An idempotency test (same event delivered twice
 → exactly one send) — explicitly flagged as the one test category to
 prioritize writing *first*. Template rendering tests per locale/channel.
 
-**Status: 🟡 Partial**
+**Status: ✅ Done** *(one deliberate exception, see below — same shape as §10)*
 - ✅ Composer unit tests — both EMAIL and SMS, using a real
   `SpringTemplateEngine` against real template files (not mocked), which
   is what actually catches a template-resolution regression
@@ -362,6 +380,17 @@ prioritize writing *first*. Template rendering tests per locale/channel.
   happy-path tests (one per type) plus the shared ignore/tolerate/
   propagate coverage, same as `OrderNotificationConsumerTest`'s own
   two-type version.
+- ✅ **`FcmPushProviderTest` (new) — closes the last provider-testing
+  gap.** Same mocked-collaborator shape as `TwilioSmsProviderTest`, real
+  (not mocked) resilience4j registries, but with a genuine wrinkle that
+  test didn't have: `FirebaseMessagingException` has no public
+  constructor at all in firebase-admin `9.10.0` (confirmed against its
+  actual source), so every exception here is
+  `Mockito.mock(FirebaseMessagingException.class)` with
+  `getMessagingErrorCode()` stubbed, not constructed for real. Covers all
+  4 permanent FCM error codes, one transient code, and a null error code
+  (raw connection failure) treated as transient — mirrors
+  `TwilioSmsProviderTest`'s coverage shape exactly. See §5.
 
 ## §12 — Build phases
 
@@ -383,13 +412,13 @@ The plan's own 5-phase rollout sequence, and where each stands:
 | 2 | Event consumption | ✅ Done |
 | 3 | Recipient resolution | ✅ Done |
 | 4 | Composition | ✅ Done |
-| 5 | Provider abstraction | 🟡 Partial |
+| 5 | Provider abstraction | ✅ Done (push functionally inert pending a `customer-service` field) |
 | 6 | Delivery reliability | ✅ Done |
 | 7 | Preferences & compliance | ✅ Done |
 | 8 | Data model | ✅ Done |
 | 9 | API surface | ✅ Done |
 | 10 | Observability | ✅ Done (time-to-delivery deliberately deferred) |
-| 11 | Testing strategy | 🟡 Partial |
+| 11 | Testing strategy | ✅ Done (WireMock-for-providers deliberately declined, see §11) |
 | 12 | Build phases | 🟡 Partial (4 of 5 phases fully closed) |
 
 **§6's retry/DLQ gap is now closed** — `NotificationRetryScheduler` polls
@@ -425,12 +454,15 @@ things worth flagging about this work overall:
    unmentioned.
 
 **What's newly the most consequential open item:** §5's push provider is
-now built as far as this repo alone can take it — the actual remaining
-blocker on Phase 4 has narrowed to one specific thing: a `customer-service`
-schema change to expose a device push token. Unlike everything else closed
-in this session, that one piece is a genuine cross-repo change, not
-something more work here can close. The
-`NotificationService#resend` precondition bug (found while building §6) is
-now fixed — see §6 above. The time-to-delivery metric (found while
-building §10) remains open, by choice, as a named follow-up rather than a
-silent gap.
+now built AND tested as far as this repo alone can take it — the actual
+remaining blocker on Phase 4 has narrowed to one specific thing: a
+`customer-service` schema change to expose a device push token. Unlike
+everything else closed in this session, that one piece is a genuine
+cross-repo change, not something more work here can close. §11's last
+gap (`FcmPushProviderTest`) is closed the same way `TwilioSmsProviderTest`
+closed its SMS equivalent — see §5/§11 above for the one real difference
+between them (no public `FirebaseMessagingException` constructor to work
+with). The `NotificationService#resend` precondition bug (found while
+building §6) is now fixed — see §6 above. The time-to-delivery metric
+(found while building §10) remains open, by choice, as a named follow-up
+rather than a silent gap.
