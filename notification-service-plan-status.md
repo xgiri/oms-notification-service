@@ -391,6 +391,19 @@ prioritize writing *first*. Template rendering tests per locale/channel.
   4 permanent FCM error codes, one transient code, and a null error code
   (raw connection failure) treated as transient — mirrors
   `TwilioSmsProviderTest`'s coverage shape exactly. See §5.
+  **Correction:** this file initially failed 8/8 of its own mocked-exception
+  tests with `UnfinishedStubbingException` on a real `mvn test` run — every
+  failing test called `mockException(...)` nested inside an already-open
+  `when(pushSender.send(...)).thenThrow(...)` chain, which corrupts
+  Mockito's stubbing state (calling `when()` a second time before the
+  first one's `.thenReturn()/.thenThrow()` completes). Fixed by extracting
+  the mocked exception to a local variable before opening the outer
+  `when()`, in all 8 affected tests — now noted in this file's own class
+  Javadoc as a pitfall for future edits. Caught only because a real build
+  was run outside this environment (no Maven Central access here to catch
+  it directly) — a reminder that "brace-balanced and diff-clean" was never
+  a substitute for an actual compile/test run on anything delivered from
+  this environment.
 
 ## §12 — Build phases
 

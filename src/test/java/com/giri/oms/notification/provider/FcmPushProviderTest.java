@@ -56,6 +56,17 @@ import static org.mockito.Mockito.when;
  * instances are built here, shaped to mirror {@code application.properties}'
  * {@code fcmPushProvider} instance (max-attempts=2) — same reasoning as
  * {@code TwilioSmsProviderTest}'s own registries.
+ * <p>
+ * Every {@code mockException(...)} call is assigned to a local variable
+ * BEFORE the {@code when(pushSender.send(...))} chain that throws it, never
+ * passed inline as {@code .thenThrow(mockException(...))}. That's not
+ * stylistic — {@code mockException} itself calls {@code when(...)} twice
+ * internally, and nesting a second, unrelated {@code when(...)} call inside
+ * the still-open argument position of an outer {@code when(...).thenThrow(...)}
+ * corrupts Mockito's stubbing state (manifests as
+ * {@code UnfinishedStubbingException}, thrown from a confusing location).
+ * Extracting the exception first avoids ever having two stubbing chains
+ * open at once.
  */
 @ExtendWith(MockitoExtension.class)
 class FcmPushProviderTest {
@@ -117,8 +128,8 @@ class FcmPushProviderTest {
         // The single most common real-world permanent case — app
         // uninstalled or token rotated. Retrying sends to a device that
         // will never receive it.
-        when(pushSender.send(anyString(), anyString(), anyString()))
-                .thenThrow(mockException(MessagingErrorCode.UNREGISTERED, "Requested entity was not found."));
+        FirebaseMessagingException ex = mockException(MessagingErrorCode.UNREGISTERED, "Requested entity was not found.");
+        when(pushSender.send(anyString(), anyString(), anyString())).thenThrow(ex);
 
         ProviderResult result = provider.send(request());
 
@@ -132,8 +143,8 @@ class FcmPushProviderTest {
 
     @Test
     void doesNotRetry_onInvalidArgument_aMalformedTokenOrMessage() throws Exception {
-        when(pushSender.send(anyString(), anyString(), anyString()))
-                .thenThrow(mockException(MessagingErrorCode.INVALID_ARGUMENT, "Malformed registration token."));
+        FirebaseMessagingException ex = mockException(MessagingErrorCode.INVALID_ARGUMENT, "Malformed registration token.");
+        when(pushSender.send(anyString(), anyString(), anyString())).thenThrow(ex);
 
         ProviderResult result = provider.send(request());
 
@@ -143,8 +154,8 @@ class FcmPushProviderTest {
 
     @Test
     void doesNotRetry_onSenderIdMismatch_tokenBelongsToADifferentFirebaseProject() throws Exception {
-        when(pushSender.send(anyString(), anyString(), anyString()))
-                .thenThrow(mockException(MessagingErrorCode.SENDER_ID_MISMATCH, "SenderId mismatch"));
+        FirebaseMessagingException ex = mockException(MessagingErrorCode.SENDER_ID_MISMATCH, "SenderId mismatch");
+        when(pushSender.send(anyString(), anyString(), anyString())).thenThrow(ex);
 
         ProviderResult result = provider.send(request());
 
@@ -154,8 +165,8 @@ class FcmPushProviderTest {
 
     @Test
     void doesNotRetry_onThirdPartyAuthError_anApnsCredentialIssueNotFixableByRetrying() throws Exception {
-        when(pushSender.send(anyString(), anyString(), anyString()))
-                .thenThrow(mockException(MessagingErrorCode.THIRD_PARTY_AUTH_ERROR, "APNs certificate invalid"));
+        FirebaseMessagingException ex = mockException(MessagingErrorCode.THIRD_PARTY_AUTH_ERROR, "APNs certificate invalid");
+        when(pushSender.send(anyString(), anyString(), anyString())).thenThrow(ex);
 
         ProviderResult result = provider.send(request());
 
@@ -165,8 +176,8 @@ class FcmPushProviderTest {
 
     @Test
     void retries_onQuotaExceeded_unlikeTheOtherErrorCodes() throws Exception {
-        when(pushSender.send(anyString(), anyString(), anyString()))
-                .thenThrow(mockException(MessagingErrorCode.QUOTA_EXCEEDED, "Too many messages"));
+        FirebaseMessagingException ex = mockException(MessagingErrorCode.QUOTA_EXCEEDED, "Too many messages");
+        when(pushSender.send(anyString(), anyString(), anyString())).thenThrow(ex);
 
         ProviderResult result = provider.send(request());
 
@@ -179,8 +190,9 @@ class FcmPushProviderTest {
 
     @Test
     void retriesThenSucceeds_whenATransientFailureIsFollowedByASuccess() throws Exception {
+        FirebaseMessagingException ex = mockException(MessagingErrorCode.UNAVAILABLE, "Backend unavailable");
         when(pushSender.send(anyString(), anyString(), anyString()))
-                .thenThrow(mockException(MessagingErrorCode.UNAVAILABLE, "Backend unavailable"))
+                .thenThrow(ex)
                 .thenReturn("projects/oms/messages/def456");
 
         ProviderResult result = provider.send(request());
@@ -197,8 +209,8 @@ class FcmPushProviderTest {
         // Distinct code path from the null-status-code case in
         // TwilioSmsProviderTest, but the same "unknown means transient"
         // default — see FcmPushProvider#isPermanentFailure's own Javadoc.
-        when(pushSender.send(anyString(), anyString(), anyString()))
-                .thenThrow(mockException(null, "Connection reset"));
+        FirebaseMessagingException ex = mockException(null, "Connection reset");
+        when(pushSender.send(anyString(), anyString(), anyString())).thenThrow(ex);
 
         ProviderResult result = provider.send(request());
 
@@ -213,8 +225,8 @@ class FcmPushProviderTest {
         // would propagate out of NotificationServiceImpl#sendAndRecord and
         // fail the whole Kafka message, which is exactly the
         // wrong-granularity failure this design avoids.
-        when(pushSender.send(anyString(), anyString(), anyString()))
-                .thenThrow(mockException(MessagingErrorCode.UNAVAILABLE, "Backend unavailable"));
+        FirebaseMessagingException ex = mockException(MessagingErrorCode.UNAVAILABLE, "Backend unavailable");
+        when(pushSender.send(anyString(), anyString(), anyString())).thenThrow(ex);
 
         Assertions.assertDoesNotThrow(() -> provider.send(request()));
     }
