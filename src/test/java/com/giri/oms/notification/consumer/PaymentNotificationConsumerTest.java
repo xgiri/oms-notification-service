@@ -24,6 +24,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -67,7 +68,7 @@ class PaymentNotificationConsumerTest {
 
         ArgumentCaptor<Map<String, Object>> templateVarsCaptor = ArgumentCaptor.forClass(Map.class);
         verify(notificationService).processEvent(
-                eq(eventId), eq(NotificationType.PAYMENT_CONFIRMED), eq(CUSTOMER_ID), eq(ORDER_ID), templateVarsCaptor.capture());
+                eq(eventId), eq(NotificationType.PAYMENT_CONFIRMED), eq(CUSTOMER_ID), eq(ORDER_ID), templateVarsCaptor.capture(), anyLong());
 
         assertThat(templateVarsCaptor.getValue())
                 .containsEntry("orderId", ORDER_ID)
@@ -85,7 +86,7 @@ class PaymentNotificationConsumerTest {
 
         ArgumentCaptor<Map<String, Object>> templateVarsCaptor = ArgumentCaptor.forClass(Map.class);
         verify(notificationService).processEvent(
-                eq(eventId), eq(NotificationType.PAYMENT_FAILED), eq(CUSTOMER_ID), eq(ORDER_ID), templateVarsCaptor.capture());
+                eq(eventId), eq(NotificationType.PAYMENT_FAILED), eq(CUSTOMER_ID), eq(ORDER_ID), templateVarsCaptor.capture(), anyLong());
 
         assertThat(templateVarsCaptor.getValue()).containsEntry("orderId", ORDER_ID);
     }
@@ -107,7 +108,7 @@ class PaymentNotificationConsumerTest {
 
         consumer.onMessage(record(jsonWithExtraField), EventType.PAYMENT_CONFIRMED);
 
-        verify(notificationService).processEvent(eq(eventId), any(), eq(CUSTOMER_ID), eq(ORDER_ID), any());
+        verify(notificationService).processEvent(eq(eventId), any(), eq(CUSTOMER_ID), eq(ORDER_ID), any(), anyLong());
     }
 
     @Test
@@ -117,7 +118,7 @@ class PaymentNotificationConsumerTest {
         assertThatThrownBy(() -> consumer.onMessage(record(paymentConfirmedJson(UUID.randomUUID(), ORDER_ID, "49.99")), EventType.PAYMENT_CONFIRMED))
                 .isInstanceOf(OrderNotFoundException.class);
 
-        verify(notificationService, never()).processEvent(any(), any(), any(), any(), any());
+        verify(notificationService, never()).processEvent(any(), any(), any(), any(), any(), anyLong());
     }
 
     @Test
@@ -128,7 +129,7 @@ class PaymentNotificationConsumerTest {
         assertThatThrownBy(() -> consumer.onMessage(record(paymentFailedJson(UUID.randomUUID(), ORDER_ID)), EventType.PAYMENT_FAILED))
                 .isInstanceOf(OrderServiceUnavailableException.class);
 
-        verify(notificationService, never()).processEvent(any(), any(), any(), any(), any());
+        verify(notificationService, never()).processEvent(any(), any(), any(), any(), any(), anyLong());
     }
 
     private String paymentConfirmedJson(UUID eventId, Long orderId, String amount) {

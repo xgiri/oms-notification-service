@@ -85,7 +85,8 @@ public class PaymentNotificationConsumer {
                 NotificationType.PAYMENT_CONFIRMED,
                 order.customerId(),
                 event.orderId(),
-                Map.of("orderId", event.orderId(), "amount", event.amount()));
+                Map.of("orderId", event.orderId(), "amount", event.amount()),
+                record.timestamp());
     }
 
     private void handlePaymentFailed(ConsumerRecord<String, String> record) {
@@ -99,7 +100,8 @@ public class PaymentNotificationConsumer {
                 NotificationType.PAYMENT_FAILED,
                 order.customerId(),
                 event.orderId(),
-                Map.of("orderId", event.orderId()));
+                Map.of("orderId", event.orderId()),
+                record.timestamp());
     }
 
     /**

@@ -8,20 +8,14 @@
 # first.
 #
 # The "Notifications" row (sent/failed/dead-lettered by channel and type,
-# retry-queue depth, provider send-duration percentiles) is backed by
-# NotificationMetrics — see that class's own Javadoc for exactly which
-# meter names/tags it registers and why. One thing still NOT here: a
-# time-to-delivery panel (event received -> notification sent). That
-# needs the event's own receipt time threaded through
-# NotificationService#processEvent's signature from each
-# @KafkaListener's ConsumerRecord#timestamp() — a public-interface change
-# touching all 3 consumers and their tests, deliberately left as a
-# separate follow-up rather than folded into NotificationMetrics itself.
-# Retry-queue depth (notifications_pending_failed) is ALSO visible to
-# KEDA directly (06-scaledobject-worker.yaml's own postgresql trigger
-# queries the same FAILED count independently) — same number, two
-# different consumers, same reasoning as OutboxMetrics' own pending gauge
-# in customer-service/oms-main.
+# retry-queue depth, provider send-duration percentiles, and now
+# time-to-delivery percentiles by channel) is backed by NotificationMetrics
+# — see that class's own Javadoc for exactly which meter names/tags it
+# registers and why. Retry-queue depth (notifications_pending_failed) is
+# ALSO visible to KEDA directly (06-scaledobject-worker.yaml's own
+# postgresql trigger queries the same FAILED count independently) — same
+# number, two different consumers, same reasoning as OutboxMetrics' own
+# pending gauge in customer-service/oms-main.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -35,7 +29,7 @@ data:
       "id": null,
       "uid": "notification-service-overview",
       "title": "notification-service Overview",
-      "description": "notification-service: web/worker split via the `role` tag, HTTP traffic, notification send/failure/dead-letter outcomes by channel and type, retry-queue depth, provider send latency, Kafka consumer lag, JVM, and DB pool. Generated to match the metrics already exposed at /actuator/prometheus \u2014 see application.properties and NotificationMetrics.java. Companion to oms-overview.json/customer-service-overview.json/product-service-overview.json, not a replacement \u2014 filtered by application=\"notification-service\" throughout. Does NOT include a time-to-delivery panel (event received \u2192 notification sent) \u2014 that needs the event's own receipt time threaded through NotificationService#processEvent, a public-interface signature change not made as part of NotificationMetrics; see that class's own Javadoc.",
+      "description": "notification-service: web/worker split via the `role` tag, HTTP traffic, notification send/failure/dead-letter outcomes by channel and type, retry-queue depth, provider send latency, Kafka consumer lag, JVM, and DB pool. Generated to match the metrics already exposed at /actuator/prometheus — see application.properties and NotificationMetrics.java. Companion to oms-overview.json/customer-service-overview.json/product-service-overview.json, not a replacement — filtered by application=\"notification-service\" throughout.",
       "tags": [
         "oms",
         "notification-service"
@@ -576,6 +570,71 @@ data:
           }
         },
         {
+          "id": 21,
+          "title": "Time to delivery (p50 / p95 / p99) by channel",
+          "type": "timeseries",
+          "description": "Event received (the triggering Kafka record's own timestamp) to a successful send — see NotificationMetrics#recordTimeToDelivery's own Javadoc for why this differs from the Send duration panel above (that one only measures the provider call itself, not the whole event-to-delivery path).",
+          "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 22
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "histogram_quantile(0.50, sum(rate(notifications_time_to_delivery_seconds_bucket{application=\"notification-service\"}[5m])) by (le, channel))",
+              "legendFormat": "p50 {{channel}}",
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "histogram_quantile(0.95, sum(rate(notifications_time_to_delivery_seconds_bucket{application=\"notification-service\"}[5m])) by (le, channel))",
+              "legendFormat": "p95 {{channel}}",
+              "refId": "B"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "histogram_quantile(0.99, sum(rate(notifications_time_to_delivery_seconds_bucket{application=\"notification-service\"}[5m])) by (le, channel))",
+              "legendFormat": "p99 {{channel}}",
+              "refId": "C"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 15,
+                "pointSize": 4
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          }
+        },
+        {
           "id": 8,
           "title": "HTTP",
           "type": "row",
@@ -583,7 +642,7 @@ data:
             "h": 1,
             "w": 24,
             "x": 0,
-            "y": 22
+            "y": 30
           },
           "collapsed": false,
           "panels": []
@@ -596,7 +655,7 @@ data:
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 23
+            "y": 31
           },
           "datasource": {
             "type": "prometheus",
@@ -645,7 +704,7 @@ data:
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 23
+            "y": 31
           },
           "datasource": {
             "type": "prometheus",
@@ -709,7 +768,7 @@ data:
             "h": 1,
             "w": 24,
             "x": 0,
-            "y": 31
+            "y": 39
           },
           "collapsed": false,
           "panels": []
@@ -722,7 +781,7 @@ data:
             "h": 8,
             "w": 24,
             "x": 0,
-            "y": 32
+            "y": 40
           },
           "datasource": {
             "type": "prometheus",
@@ -767,7 +826,7 @@ data:
             "h": 1,
             "w": 24,
             "x": 0,
-            "y": 40
+            "y": 48
           },
           "collapsed": false,
           "panels": []
@@ -780,7 +839,7 @@ data:
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 41
+            "y": 49
           },
           "datasource": {
             "type": "prometheus",
@@ -835,7 +894,7 @@ data:
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 41
+            "y": 49
           },
           "datasource": {
             "type": "prometheus",

@@ -17,6 +17,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.verify;
@@ -52,7 +53,7 @@ class CustomerWelcomeConsumerTest {
 
         ArgumentCaptor<Map<String, Object>> templateVarsCaptor = ArgumentCaptor.forClass(Map.class);
         verify(notificationService).processEvent(
-                eq(eventId), eq(NotificationType.CUSTOMER_WELCOME), eq(CUSTOMER_ID), isNull(), templateVarsCaptor.capture());
+                eq(eventId), eq(NotificationType.CUSTOMER_WELCOME), eq(CUSTOMER_ID), isNull(), templateVarsCaptor.capture(), anyLong());
 
         assertThat(templateVarsCaptor.getValue()).isEmpty();
     }
@@ -73,7 +74,7 @@ class CustomerWelcomeConsumerTest {
 
         consumer.onMessage(record(jsonWithExtraField), EventType.CUSTOMER_CREATED);
 
-        verify(notificationService).processEvent(eq(eventId), eq(NotificationType.CUSTOMER_WELCOME), eq(CUSTOMER_ID), isNull(), eq(Map.of()));
+        verify(notificationService).processEvent(eq(eventId), eq(NotificationType.CUSTOMER_WELCOME), eq(CUSTOMER_ID), isNull(), eq(Map.of()), anyLong());
     }
 
     private String customerCreatedJson(UUID eventId, Long customerId) {

@@ -260,7 +260,7 @@ a Grafana dashboard from day one. A notification-specific metric the other
 services don't need: time-to-delivery (event received → notification
 sent).
 
-**Status: ✅ Done** *(one deliberate exception, see below)*
+**Status: ✅ Done**
 - ✅ OTel/Tempo wired to the same OTLP endpoint as the rest of OMS
 - ✅ Prometheus scrape target — `k8s/08-podmonitor.yaml` (Prometheus
   Operator) plus the `prometheus.io/*` pod annotations already on both
@@ -282,16 +282,34 @@ sent).
   `FAILED` count directly, `k8s/06-scaledobject-worker.yaml`) **and**
   Grafana/Prometheus (`notifications.pending.failed`) — same number, two
   consumers, same pattern as `OutboxMetrics`' own pending gauge
-- ⬜ **Time-to-delivery is the one metric still not built**, by deliberate
-  choice, not oversight: it needs the event's own receipt time threaded
-  through `NotificationService#processEvent`'s signature (from each
-  `@KafkaListener`'s `ConsumerRecord#timestamp()`) — a public-interface
-  change touching all 4 consumers (`OrderNotificationConsumer`,
+- ✅ **Time-to-delivery — now built.** `NotificationService#processEvent`
+  gained a new `eventTimestampMillis` param (the triggering Kafka record's
+  own `ConsumerRecord#timestamp()` — broker-assigned `CreateTime` by
+  default, not this method's own call time), threaded through from all 4
+  `@KafkaListener` consumers (`OrderNotificationConsumer`,
   `PaymentNotificationConsumer`, `CustomerWelcomeConsumer`,
   `ShipmentNotificationConsumer` — this doc's own count was stale at "3"
-  before `ShipmentNotificationConsumer` shipped) and their tests, not
-  something that belonged folded silently into `NotificationMetrics`.
-  Flagged in that class's own Javadoc as a follow-up
+  before `ShipmentNotificationConsumer` shipped, now fixed here too) at
+  all 8 of their `processEvent` call sites. `NotificationMetrics` gained
+  `recordTimeToDelivery`, called from `sendAndRecord`'s success branch
+  only — measures "did the customer actually get notified promptly," this
+  service's own plan's stated reason for wanting this metric, and
+  deliberately distinct from `notifications.send.duration` (which only
+  measures the provider call itself — a message sitting in a consumer-lag
+  backlog for 10 minutes before this service even picks it up would show
+  fast provider latency but slow time-to-delivery). Deliberately **NOT**
+  wired into `resend`/`NotificationRetryScheduler` — there's no original
+  event timestamp persisted on the `Notification` row for a retry to
+  recover, and this metric is specifically about the FIRST delivery
+  attempt; a retried notification's timing is already visible via
+  `notifications.pending.failed`/`notifications.dead_lettered`, a distinct
+  signal. Documented on `resend`'s own interface Javadoc. Covered by a new
+  `Metrics` nested test class in `NotificationServiceImplTest` (asserts the
+  exact duration via a fixed `Clock`, and that a failed send does NOT
+  record it). A Grafana panel for it (`Time to delivery (p50 / p95 / p99)
+  by channel`, same shape as the existing send-duration panel) is now in
+  the "Notifications" row too — `k8s/09-grafana-dashboard.yaml`'s own
+  header comment updated accordingly.
 
 ## §11 — Testing strategy
 
@@ -413,7 +431,7 @@ The plan's own 5-phase rollout sequence, and where each stands:
 2. **Preferences + opt-out, before more event types** — ✅ Done. Signed unsubscribe token done; per-type enforcement is now real (`CUSTOMER_WELCOME` opt-out-able, order/payment/shipment stay required) — see §7.
 3. **Remaining event types on email** — ✅ Done. `OrderCancelled`, `PaymentConfirmed`, `PaymentFailed`, `CustomerWelcome`, `ShipmentShipped`, `ShipmentDelivered`, `ShipmentReturned` all done — every event type in the plan's original §2 table is now wired.
 4. **Additional channels (SMS, push)** — 🟡 Partial. SMS fully done (`TwilioSmsProvider`, templates, multi-channel fan-out in `NotificationServiceImpl`). Push (`FcmPushProvider`) is now built — see §5 — but deliberately gated off (`app.notification.push.enabled=false`) since `customer-service` doesn't expose a push token to send to yet; that field is the one remaining blocker, not missing code here.
-5. **Infra parity** — ✅ Done. k8s manifests (web/worker split, KEDA-driven worker autoscaling on consumer lag + retry backlog, PDBs, PodMonitor), Prometheus scrape target, and a Grafana dashboard with real notification-specific metrics (sent/failed/dead-lettered by channel and type, retry-queue depth, provider send latency, via the new `NotificationMetrics` class) are all built — see `k8s/README.md`. Only exception: no time-to-delivery panel, a deliberate deferral pending a `processEvent` signature change — see §10.
+5. **Infra parity** — ✅ Done. k8s manifests (web/worker split, KEDA-driven worker autoscaling on consumer lag + retry backlog, PDBs, PodMonitor), Prometheus scrape target, and a Grafana dashboard with real notification-specific metrics (sent/failed/dead-lettered by channel and type, retry-queue depth, provider send latency, and now time-to-delivery, via the `NotificationMetrics` class) are all built — see `k8s/README.md`.
 
 ---
 
@@ -430,7 +448,7 @@ The plan's own 5-phase rollout sequence, and where each stands:
 | 7 | Preferences & compliance | ✅ Done |
 | 8 | Data model | ✅ Done |
 | 9 | API surface | ✅ Done |
-| 10 | Observability | ✅ Done (time-to-delivery deliberately deferred) |
+| 10 | Observability | ✅ Done |
 | 11 | Testing strategy | ✅ Done (WireMock-for-providers deliberately declined, see §11) |
 | 12 | Build phases | 🟡 Partial (4 of 5 phases fully closed) |
 
@@ -457,14 +475,13 @@ things worth flagging about this work overall:
    retry-queue depth as a live gauge, and provider send-duration
    percentiles — genuinely backed by Prometheus series, not placeholder
    panels.
-3. One metric was deliberately NOT built as part of this: time-to-delivery.
-   Closing it needs a `NotificationService#processEvent` signature
-   change (threading the Kafka record's own timestamp through from each
-   of the 4 consumers) — a public-interface change touching all of them
-   and their tests, judged too invasive to fold in silently alongside a
-   metrics class. Flagged as a named follow-up in `NotificationMetrics`'
-   own Javadoc rather than either done without asking or dropped
-   unmentioned.
+3. Time-to-delivery, the one metric deliberately NOT built in that earlier
+   pass, is now built too — see §10. It needed exactly the
+   `NotificationService#processEvent` signature change flagged as the
+   reason for deferring it (threading the Kafka record's own timestamp
+   through from all 4 consumers), done as a separate, later pass rather
+   than folded into the metrics-class work above — including its own
+   Grafana panel, added in the same pass.
 
 **What's newly the most consequential open item:** §5's push provider is
 now built AND tested as far as this repo alone can take it — the actual
@@ -477,5 +494,9 @@ closed its SMS equivalent — see §5/§11 above for the one real difference
 between them (no public `FirebaseMessagingException` constructor to work
 with). The `NotificationService#resend` precondition bug (found while
 building §6) is now fixed — see §6 above. The time-to-delivery metric
-(found while building §10) remains open, by choice, as a named follow-up
-rather than a silent gap.
+(found while building §10) is now built too, including its own Grafana
+panel — see §10. With that closed, §5's push provider being blocked on
+`customer-service`'s schema change is the only genuinely open item left in
+this entire doc that isn't a deliberate product-decision deferral (§5's
+push-fallback question, §11's WireMock-for-Twilio/FCM decision) or already
+resolved.

@@ -23,6 +23,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -69,7 +70,7 @@ class OrderNotificationConsumerTest {
 
         ArgumentCaptor<Map<String, Object>> templateVarsCaptor = ArgumentCaptor.forClass(Map.class);
         verify(notificationService).processEvent(
-                eq(eventId), eq(NotificationType.ORDER_CONFIRMED), eq(CUSTOMER_ID), eq(ORDER_ID), templateVarsCaptor.capture());
+                eq(eventId), eq(NotificationType.ORDER_CONFIRMED), eq(CUSTOMER_ID), eq(ORDER_ID), templateVarsCaptor.capture(), anyLong());
 
         assertThat(templateVarsCaptor.getValue()).containsEntry("orderId", ORDER_ID);
     }
@@ -85,7 +86,7 @@ class OrderNotificationConsumerTest {
 
         ArgumentCaptor<Map<String, Object>> templateVarsCaptor = ArgumentCaptor.forClass(Map.class);
         verify(notificationService).processEvent(
-                eq(eventId), eq(NotificationType.ORDER_CANCELLED), eq(CUSTOMER_ID), eq(ORDER_ID), templateVarsCaptor.capture());
+                eq(eventId), eq(NotificationType.ORDER_CANCELLED), eq(CUSTOMER_ID), eq(ORDER_ID), templateVarsCaptor.capture(), anyLong());
 
         assertThat(templateVarsCaptor.getValue()).containsEntry("orderId", ORDER_ID);
     }
@@ -112,7 +113,7 @@ class OrderNotificationConsumerTest {
 
         consumer.onMessage(record(jsonWithExtraField), EventType.ORDER_CONFIRMED);
 
-        verify(notificationService).processEvent(eq(eventId), any(), eq(CUSTOMER_ID), eq(ORDER_ID), any());
+        verify(notificationService).processEvent(eq(eventId), any(), eq(CUSTOMER_ID), eq(ORDER_ID), any(), anyLong());
     }
 
     @Test
@@ -125,7 +126,7 @@ class OrderNotificationConsumerTest {
         assertThatThrownBy(() -> consumer.onMessage(record(orderConfirmedJson(UUID.randomUUID(), ORDER_ID)), EventType.ORDER_CONFIRMED))
                 .isInstanceOf(OrderNotFoundException.class);
 
-        verify(notificationService, never()).processEvent(any(), any(), any(), any(), any());
+        verify(notificationService, never()).processEvent(any(), any(), any(), any(), any(), anyLong());
     }
 
     @Test
@@ -136,7 +137,7 @@ class OrderNotificationConsumerTest {
         assertThatThrownBy(() -> consumer.onMessage(record(orderCancelledJson(UUID.randomUUID(), ORDER_ID)), EventType.ORDER_CANCELLED))
                 .isInstanceOf(OrderServiceUnavailableException.class);
 
-        verify(notificationService, never()).processEvent(any(), any(), any(), any(), any());
+        verify(notificationService, never()).processEvent(any(), any(), any(), any(), any(), anyLong());
     }
 
     private String orderConfirmedJson(UUID eventId, Long orderId) {

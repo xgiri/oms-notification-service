@@ -95,7 +95,7 @@ public class NotificationServiceImpl implements NotificationService {
     @Override
     @Transactional
     public void processEvent(UUID eventId, NotificationType type, Long customerId, Long orderId,
-                              Map<String, Object> templateVariables) {
+                              Map<String, Object> templateVariables, long eventTimestampMillis) {
         if (processedEventRepository.existsByEventIdAndNotificationType(eventId, type.name())) {
             log.info("Skipping event id={} type={} — already processed (redelivery)", eventId, type);
             return;
@@ -121,7 +121,7 @@ public class NotificationServiceImpl implements NotificationService {
                         channel, customerId, type, channel);
                 continue;
             }
-            sendAndRecord(type, customerId, orderId, channel, recipientAddress, templateVariables);
+            sendAndRecord(type, customerId, orderId, channel, recipientAddress, templateVariables, eventTimestampMillis);
         }
 
         markProcessed(eventId, type);
@@ -174,9 +174,19 @@ public class NotificationServiceImpl implements NotificationService {
      * together, including why {@code markProcessed} deliberately stays
      * in the caller, called once after this runs for every channel, not
      * once per call here.
+     * <p>
+     * {@code eventTimestampMillis} is ONLY used to compute time-to-delivery
+     * on a successful send — see {@link NotificationMetrics#recordTimeToDelivery}.
+     * {@code resend} does NOT go through this method and has no equivalent
+     * timing call — see that method's own Javadoc on why: there's no
+     * original event timestamp persisted on the {@code Notification} row to
+     * recover it from, and time-to-delivery is meant to measure the FIRST
+     * attempt specifically, not a manually-retried one (which the existing
+     * retry-queue-depth/dead-lettered metrics already cover).
      */
     private void sendAndRecord(NotificationType type, Long customerId, Long orderId, NotificationChannel channel,
-                                String recipientAddress, Map<String, Object> templateVariables) {
+                                String recipientAddress, Map<String, Object> templateVariables,
+                                long eventTimestampMillis) {
         NotificationProvider provider = providerFor(channel);
         NotificationRequest request = composer.compose(type, channel, "en", recipientAddress,
                 withUnsubscribeLink(templateVariables, customerId, type, channel));
@@ -198,6 +208,8 @@ public class NotificationServiceImpl implements NotificationService {
             notification.setProviderMessageId(result.providerMessageId());
             notification.setSentAt(LocalDateTime.now(clock));
             notificationMetrics.recordSent(channel, type, durationNanos);
+            notificationMetrics.recordTimeToDelivery(channel, type,
+                    clock.millis() - eventTimestampMillis);
         } else {
             notification.setStatus(NotificationStatus.FAILED);
             notification.setLastError(result.errorMessage());

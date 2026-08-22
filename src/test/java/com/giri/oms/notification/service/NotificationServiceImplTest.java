@@ -34,6 +34,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -80,6 +81,13 @@ class NotificationServiceImplTest {
     private static final UUID EVENT_ID = UUID.randomUUID();
     private static final Long CUSTOMER_ID = 7L;
     private static final Long ORDER_ID = 100L;
+    // 5 seconds before clock's own fixed instant (set in setUp) — an
+    // arbitrary but deliberately non-zero gap, so any test asserting on
+    // NotificationMetrics#recordTimeToDelivery's duration argument has a
+    // real, non-trivial number to check rather than 0 (which could pass
+    // even if the subtraction were silently wrong on both sides).
+    private static final long EVENT_TIMESTAMP_MILLIS =
+            Instant.parse("2026-08-14T12:00:00Z").minusSeconds(5).toEpochMilli();
 
     @BeforeEach
     void setUp() {
@@ -98,7 +106,7 @@ class NotificationServiceImplTest {
             when(processedEventRepository.existsByEventIdAndNotificationType(EVENT_ID, "ORDER_CONFIRMED"))
                     .thenReturn(true);
 
-            notificationService.processEvent(EVENT_ID, NotificationType.ORDER_CONFIRMED, CUSTOMER_ID, ORDER_ID, Map.of());
+            notificationService.processEvent(EVENT_ID, NotificationType.ORDER_CONFIRMED, CUSTOMER_ID, ORDER_ID, Map.of(), EVENT_TIMESTAMP_MILLIS);
 
             // Nothing downstream of the idempotency check should ever be
             // touched — not the preference check, not CustomerClient, not
@@ -125,7 +133,7 @@ class NotificationServiceImplTest {
                     .thenReturn(new NotificationRequest("jane@example.com", "subj", "html", "text"));
             when(emailProvider.send(any())).thenReturn(ProviderResult.success("msg-1"));
 
-            notificationService.processEvent(EVENT_ID, NotificationType.ORDER_CONFIRMED, CUSTOMER_ID, ORDER_ID, Map.of());
+            notificationService.processEvent(EVENT_ID, NotificationType.ORDER_CONFIRMED, CUSTOMER_ID, ORDER_ID, Map.of(), EVENT_TIMESTAMP_MILLIS);
 
             verify(notificationRepository).save(any());
         }
@@ -146,8 +154,8 @@ class NotificationServiceImplTest {
                     .thenReturn(new NotificationRequest("jane@example.com", "subj", "html", "text"));
             when(emailProvider.send(any())).thenReturn(ProviderResult.success("msg-1"));
 
-            notificationService.processEvent(EVENT_ID, NotificationType.ORDER_CONFIRMED, CUSTOMER_ID, ORDER_ID, Map.of());
-            notificationService.processEvent(EVENT_ID, NotificationType.ORDER_CONFIRMED, CUSTOMER_ID, ORDER_ID, Map.of());
+            notificationService.processEvent(EVENT_ID, NotificationType.ORDER_CONFIRMED, CUSTOMER_ID, ORDER_ID, Map.of(), EVENT_TIMESTAMP_MILLIS);
+            notificationService.processEvent(EVENT_ID, NotificationType.ORDER_CONFIRMED, CUSTOMER_ID, ORDER_ID, Map.of(), EVENT_TIMESTAMP_MILLIS);
 
             // Exactly one send, one saved Notification, one ProcessedEvent —
             // not two of any of them.
@@ -168,7 +176,7 @@ class NotificationServiceImplTest {
             when(preferenceService.isOptedIn(CUSTOMER_ID, NotificationType.ORDER_CONFIRMED, NotificationChannel.EMAIL))
                     .thenReturn(false);
 
-            notificationService.processEvent(EVENT_ID, NotificationType.ORDER_CONFIRMED, CUSTOMER_ID, ORDER_ID, Map.of());
+            notificationService.processEvent(EVENT_ID, NotificationType.ORDER_CONFIRMED, CUSTOMER_ID, ORDER_ID, Map.of(), EVENT_TIMESTAMP_MILLIS);
 
             // Opted-out still marks the event processed — a redelivery of
             // this same event must not re-evaluate (and potentially now
@@ -203,7 +211,7 @@ class NotificationServiceImplTest {
                     .thenReturn(new NotificationRequest("jane@example.com", "subj", "html", "text"));
             when(emailProvider.send(any())).thenReturn(ProviderResult.success("msg-1"));
 
-            notificationService.processEvent(EVENT_ID, NotificationType.ORDER_CONFIRMED, CUSTOMER_ID, ORDER_ID, Map.of("orderId", ORDER_ID));
+            notificationService.processEvent(EVENT_ID, NotificationType.ORDER_CONFIRMED, CUSTOMER_ID, ORDER_ID, Map.of("orderId", ORDER_ID), EVENT_TIMESTAMP_MILLIS);
 
             @SuppressWarnings("unchecked")
             ArgumentCaptor<Map<String, Object>> variablesCaptor = ArgumentCaptor.forClass(Map.class);
@@ -211,6 +219,63 @@ class NotificationServiceImplTest {
             assertThat(variablesCaptor.getValue())
                     .containsEntry("unsubscribeUrl", "https://notify.example.com/api/v1/notifications/unsubscribe?token=signed-token")
                     .containsEntry("orderId", ORDER_ID);
+        }
+    }
+
+    /**
+     * Covers {@code sendAndRecord}'s call to
+     * {@code NotificationMetrics#recordTimeToDelivery} on a successful
+     * send — see that method's own Javadoc for why it's computed from
+     * {@code eventTimestampMillis} (the triggering Kafka record's own
+     * timestamp) rather than anything about when {@code processEvent}
+     * itself started running.
+     */
+    @Nested
+    class Metrics {
+
+        @Test
+        void recordsTimeToDelivery_asTheGapBetweenTheEventTimestampAndNow_onASuccessfulSend() {
+            when(processedEventRepository.existsByEventIdAndNotificationType(EVENT_ID, "ORDER_CONFIRMED"))
+                    .thenReturn(false);
+            when(preferenceService.isOptedIn(any(), any(), any())).thenReturn(true);
+            when(customerClient.getCustomer(CUSTOMER_ID))
+                    .thenReturn(new CustomerClientResponse(CUSTOMER_ID, "Jane", "Doe", "jane@example.com", null, null));
+            when(emailProvider.channel()).thenReturn(NotificationChannel.EMAIL);
+            when(composer.compose(any(), any(), anyString(), anyString(), any()))
+                    .thenReturn(new NotificationRequest("jane@example.com", "subj", "html", "text"));
+            when(emailProvider.send(any())).thenReturn(ProviderResult.success("msg-1"));
+
+            notificationService.processEvent(EVENT_ID, NotificationType.ORDER_CONFIRMED, CUSTOMER_ID, ORDER_ID,
+                    Map.of("orderId", ORDER_ID), EVENT_TIMESTAMP_MILLIS);
+
+            // clock is fixed 5 seconds after EVENT_TIMESTAMP_MILLIS — see
+            // that constant's own comment — so this is an exact figure, not
+            // a range check.
+            verify(notificationMetrics).recordTimeToDelivery(NotificationChannel.EMAIL, NotificationType.ORDER_CONFIRMED, 5000L);
+        }
+
+        @Test
+        void doesNotRecordTimeToDelivery_whenTheSendFails() {
+            // Time-to-delivery is specifically about a successful delivery
+            // — see NotificationMetrics#recordTimeToDelivery's own Javadoc.
+            // A failed send's timing isn't a meaningful "how promptly was
+            // the customer notified" data point; recordFailed (verified
+            // elsewhere, see FailedSendHandling) is the metric for this
+            // case instead.
+            when(processedEventRepository.existsByEventIdAndNotificationType(EVENT_ID, "ORDER_CONFIRMED"))
+                    .thenReturn(false);
+            when(preferenceService.isOptedIn(any(), any(), any())).thenReturn(true);
+            when(customerClient.getCustomer(CUSTOMER_ID))
+                    .thenReturn(new CustomerClientResponse(CUSTOMER_ID, "Jane", "Doe", "jane@example.com", null, null));
+            when(emailProvider.channel()).thenReturn(NotificationChannel.EMAIL);
+            when(composer.compose(any(), any(), anyString(), anyString(), any()))
+                    .thenReturn(new NotificationRequest("jane@example.com", "subj", "html", "text"));
+            when(emailProvider.send(any())).thenReturn(ProviderResult.failure("provider down"));
+
+            notificationService.processEvent(EVENT_ID, NotificationType.ORDER_CONFIRMED, CUSTOMER_ID, ORDER_ID,
+                    Map.of("orderId", ORDER_ID), EVENT_TIMESTAMP_MILLIS);
+
+            verify(notificationMetrics, never()).recordTimeToDelivery(any(), any(), anyLong());
         }
     }
 
@@ -233,7 +298,7 @@ class NotificationServiceImplTest {
             // why a failed send is recorded, not raised as an exception
             // that would fail the whole Kafka message after the
             // idempotency row has already been written.
-            notificationService.processEvent(EVENT_ID, NotificationType.ORDER_CONFIRMED, CUSTOMER_ID, ORDER_ID, Map.of());
+            notificationService.processEvent(EVENT_ID, NotificationType.ORDER_CONFIRMED, CUSTOMER_ID, ORDER_ID, Map.of(), EVENT_TIMESTAMP_MILLIS);
 
             ArgumentCaptor<Notification> captor = ArgumentCaptor.forClass(Notification.class);
             verify(notificationRepository).save(captor.capture());
@@ -374,7 +439,7 @@ class NotificationServiceImplTest {
             when(emailProvider.send(any())).thenReturn(ProviderResult.success("email-msg-1"));
             when(smsProvider.send(any())).thenReturn(ProviderResult.success("sms-msg-1"));
 
-            multiChannelService.processEvent(EVENT_ID, NotificationType.ORDER_CONFIRMED, CUSTOMER_ID, ORDER_ID, Map.of());
+            multiChannelService.processEvent(EVENT_ID, NotificationType.ORDER_CONFIRMED, CUSTOMER_ID, ORDER_ID, Map.of(), EVENT_TIMESTAMP_MILLIS);
 
             // One Notification row per channel — not one shared row.
             verify(notificationRepository, org.mockito.Mockito.times(2)).save(any());
@@ -401,7 +466,7 @@ class NotificationServiceImplTest {
                     .thenReturn(new NotificationRequest("jane@example.com", "subj", "html", "text"));
             when(emailProvider.send(any())).thenReturn(ProviderResult.success("email-msg-1"));
 
-            multiChannelService.processEvent(EVENT_ID, NotificationType.ORDER_CONFIRMED, CUSTOMER_ID, ORDER_ID, Map.of());
+            multiChannelService.processEvent(EVENT_ID, NotificationType.ORDER_CONFIRMED, CUSTOMER_ID, ORDER_ID, Map.of(), EVENT_TIMESTAMP_MILLIS);
 
             verify(emailProvider).send(any());
             verify(smsProvider, never()).send(any());
@@ -425,7 +490,7 @@ class NotificationServiceImplTest {
                     .thenReturn(new NotificationRequest("jane@example.com", "subj", "html", "text"));
             when(emailProvider.send(any())).thenReturn(ProviderResult.success("email-msg-1"));
 
-            multiChannelService.processEvent(EVENT_ID, NotificationType.ORDER_CONFIRMED, CUSTOMER_ID, ORDER_ID, Map.of());
+            multiChannelService.processEvent(EVENT_ID, NotificationType.ORDER_CONFIRMED, CUSTOMER_ID, ORDER_ID, Map.of(), EVENT_TIMESTAMP_MILLIS);
 
             verify(emailProvider).send(any());
             verify(smsProvider, never()).send(any());

@@ -22,9 +22,18 @@ public interface NotificationService {
      * @param orderId nullable — see Notification.orderId's own Javadoc.
      * @param templateVariables passed straight through to NotificationComposer;
      *                          this method doesn't interpret them.
+     * @param eventTimestampMillis the triggering Kafka record's own
+     *        {@code ConsumerRecord#timestamp()} (broker-assigned
+     *        {@code CreateTime} by default, not this method's own
+     *        call time) — used only to compute the time-to-delivery metric
+     *        on a successful send (see NotificationMetrics#recordTimeToDelivery).
+     *        Every {@code @KafkaListener} passes this straight from the
+     *        record it received; there's no other source for it, since this
+     *        method itself has no notion of when the underlying business
+     *        event actually happened.
      */
-    void processEvent(UUID eventId, NotificationType type,
-                       Long customerId, Long orderId, Map<String, Object> templateVariables);
+    void processEvent(UUID eventId, NotificationType type, Long customerId, Long orderId,
+                       Map<String, Object> templateVariables, long eventTimestampMillis);
 
     /**
      * Support/ops use only — see notification.controller's
@@ -40,6 +49,16 @@ public interface NotificationService {
      * a richer future notification type's template. Persisting the original
      * template variables (e.g. as a JSON column) is the real fix, deferred
      * out of Phase 1 scope.
+     * <p>
+     * <b>Does not emit a time-to-delivery metric</b>, unlike the original
+     * send path (see NotificationServiceImpl#sendAndRecord) — there's no
+     * original event timestamp persisted on the Notification row to
+     * recover it from, and time-to-delivery is meant to measure the FIRST
+     * delivery attempt specifically. A manually-retried or scheduler-retried
+     * notification's timing is already covered by the retry-queue-depth and
+     * dead-lettered metrics (see NotificationMetrics), which is a distinct
+     * signal from "how promptly did the customer get notified in the first
+     * place."
      */
     void resend(Long notificationId);
 }

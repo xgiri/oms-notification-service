@@ -42,20 +42,17 @@ import java.util.concurrent.TimeUnit;
  * {@code NotificationServiceImpl#sendAndRecord}/{@code #resend} and
  * {@code NotificationRetryScheduler#retryOne}.
  * <p>
- * {@code channel}/{@code type} tags are bounded (2 channels × up to 8
- * types today = at most 16 series per counter) — a genuinely different
- * situation from {@code OutboxMetrics#recordFailed}'s own choice not to
- * tag by failure reason (unbounded exception text would be a real
- * cardinality problem; a closed enum pair is not).
+ * {@code channel}/{@code type} tags are bounded — up to 3 channels
+ * (EMAIL/SMS/PUSH, though PUSH's series won't appear at all while
+ * {@code app.notification.push.enabled=false} — see {@code FcmPushProvider}'s
+ * own Javadoc) × up to 8 types today = at most 24 series per counter — a
+ * genuinely different situation from {@code OutboxMetrics#recordFailed}'s
+ * own choice not to tag by failure reason (unbounded exception text would
+ * be a real cardinality problem; a closed enum pair is not).
  * <p>
- * Does NOT include a time-to-delivery metric (event-received →
- * notification-sent), even though this service's own plan called it out
- * by name as worth having — that needs the event's own receipt time
- * threaded through {@code NotificationService#processEvent} from each
- * {@code @KafkaListener}'s {@code ConsumerRecord#timestamp()}, which is a
- * public-interface signature change touching all 3 consumers and their
- * tests, not just this class. Left as a deliberate follow-up rather than
- * folded in here silently.
+ * Time-to-delivery (event-received → notification-sent) — called out by
+ * name in this service's own plan §10 — is {@link #recordTimeToDelivery};
+ * see that method's own Javadoc for what it does and doesn't cover.
  */
 @Component
 public class NotificationMetrics {
@@ -90,6 +87,41 @@ public class NotificationMetrics {
                 .publishPercentileHistogram()
                 .register(meterRegistry)
                 .record(durationNanos, TimeUnit.NANOSECONDS);
+    }
+
+    /**
+     * Time from the triggering Kafka event's own record timestamp
+     * (broker-assigned {@code CreateTime} by default — see
+     * {@code NotificationService#processEvent}'s {@code eventTimestampMillis}
+     * param) to this successful send — "did the customer actually get
+     * notified promptly," this service's own plan's stated reason for
+     * wanting this metric, distinct from {@link #recordSent}'s
+     * {@code notifications.send.duration} (which only measures the
+     * provider call itself, not the whole event-to-delivery path — a
+     * message sitting in a consumer-lag backlog for 10 minutes before this
+     * service ever picks it up would show fast provider latency but slow
+     * time-to-delivery; these two metrics are deliberately answering
+     * different questions).
+     * <p>
+     * Call ONLY from {@code NotificationServiceImpl#sendAndRecord}'s
+     * success branch — NOT from {@code #resend}/
+     * {@code NotificationRetryScheduler}. See
+     * {@code NotificationService#resend}'s own Javadoc for why: there's no
+     * original event timestamp persisted on the {@code Notification} row
+     * for a retry to recover, and this metric is specifically about the
+     * FIRST delivery attempt — a retried notification's timing is already
+     * visible via {@code notifications.pending.failed}/
+     * {@code notifications.dead_lettered}, a distinct signal.
+     */
+    public void recordTimeToDelivery(NotificationChannel channel, NotificationType type, long durationMillis) {
+        Timer.builder("notifications.time_to_delivery")
+                .description("Time from the triggering Kafka event's own record timestamp to a successful send — "
+                        + "see this method's own Javadoc for how this differs from notifications.send.duration")
+                .tag("channel", channel.name())
+                .tag("type", type.name())
+                .publishPercentileHistogram()
+                .register(meterRegistry)
+                .record(durationMillis, TimeUnit.MILLISECONDS);
     }
 
     /**

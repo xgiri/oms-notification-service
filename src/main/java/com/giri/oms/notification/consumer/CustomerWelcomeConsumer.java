@@ -78,7 +78,8 @@ public class CustomerWelcomeConsumer {
                 NotificationType.CUSTOMER_WELCOME,
                 event.customerId(),
                 null,
-                Map.of());
+                Map.of(),
+                record.timestamp());
     }
 
     /**

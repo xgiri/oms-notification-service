@@ -82,7 +82,8 @@ public class ShipmentNotificationConsumer {
                 NotificationType.SHIPMENT_SHIPPED,
                 order.customerId(),
                 event.orderId(),
-                Map.of("orderId", event.orderId(), "trackingNumber", event.trackingNumber()));
+                Map.of("orderId", event.orderId(), "trackingNumber", event.trackingNumber()),
+                record.timestamp());
     }
 
     private void handleShipmentDelivered(ConsumerRecord<String, String> record) {
@@ -96,7 +97,8 @@ public class ShipmentNotificationConsumer {
                 NotificationType.SHIPMENT_DELIVERED,
                 order.customerId(),
                 event.orderId(),
-                Map.of("orderId", event.orderId()));
+                Map.of("orderId", event.orderId()),
+                record.timestamp());
     }
 
     private void handleShipmentReturned(ConsumerRecord<String, String> record) {
@@ -110,7 +112,8 @@ public class ShipmentNotificationConsumer {
                 NotificationType.SHIPMENT_RETURNED,
                 order.customerId(),
                 event.orderId(),
-                Map.of("orderId", event.orderId()));
+                Map.of("orderId", event.orderId()),
+                record.timestamp());
     }
 
     /**

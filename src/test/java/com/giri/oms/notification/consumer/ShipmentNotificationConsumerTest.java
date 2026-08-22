@@ -23,6 +23,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -66,7 +67,7 @@ class ShipmentNotificationConsumerTest {
 
         ArgumentCaptor<Map<String, Object>> templateVarsCaptor = ArgumentCaptor.forClass(Map.class);
         verify(notificationService).processEvent(
-                eq(eventId), eq(NotificationType.SHIPMENT_SHIPPED), eq(CUSTOMER_ID), eq(ORDER_ID), templateVarsCaptor.capture());
+                eq(eventId), eq(NotificationType.SHIPMENT_SHIPPED), eq(CUSTOMER_ID), eq(ORDER_ID), templateVarsCaptor.capture(), anyLong());
 
         assertThat(templateVarsCaptor.getValue())
                 .containsEntry("orderId", ORDER_ID)
@@ -84,7 +85,7 @@ class ShipmentNotificationConsumerTest {
 
         ArgumentCaptor<Map<String, Object>> templateVarsCaptor = ArgumentCaptor.forClass(Map.class);
         verify(notificationService).processEvent(
-                eq(eventId), eq(NotificationType.SHIPMENT_DELIVERED), eq(CUSTOMER_ID), eq(ORDER_ID), templateVarsCaptor.capture());
+                eq(eventId), eq(NotificationType.SHIPMENT_DELIVERED), eq(CUSTOMER_ID), eq(ORDER_ID), templateVarsCaptor.capture(), anyLong());
 
         assertThat(templateVarsCaptor.getValue()).containsEntry("orderId", ORDER_ID);
     }
@@ -100,7 +101,7 @@ class ShipmentNotificationConsumerTest {
 
         ArgumentCaptor<Map<String, Object>> templateVarsCaptor = ArgumentCaptor.forClass(Map.class);
         verify(notificationService).processEvent(
-                eq(eventId), eq(NotificationType.SHIPMENT_RETURNED), eq(CUSTOMER_ID), eq(ORDER_ID), templateVarsCaptor.capture());
+                eq(eventId), eq(NotificationType.SHIPMENT_RETURNED), eq(CUSTOMER_ID), eq(ORDER_ID), templateVarsCaptor.capture(), anyLong());
 
         assertThat(templateVarsCaptor.getValue()).containsEntry("orderId", ORDER_ID);
     }
@@ -122,7 +123,7 @@ class ShipmentNotificationConsumerTest {
 
         consumer.onMessage(record(jsonWithExtraField), EventType.SHIPMENT_SHIPPED);
 
-        verify(notificationService).processEvent(eq(eventId), any(), eq(CUSTOMER_ID), eq(ORDER_ID), any());
+        verify(notificationService).processEvent(eq(eventId), any(), eq(CUSTOMER_ID), eq(ORDER_ID), any(), anyLong());
     }
 
     @Test
@@ -132,7 +133,7 @@ class ShipmentNotificationConsumerTest {
         assertThatThrownBy(() -> consumer.onMessage(record(shipmentShippedJson(UUID.randomUUID(), ORDER_ID, "TRACK123")), EventType.SHIPMENT_SHIPPED))
                 .isInstanceOf(OrderNotFoundException.class);
 
-        verify(notificationService, never()).processEvent(any(), any(), any(), any(), any());
+        verify(notificationService, never()).processEvent(any(), any(), any(), any(), any(), anyLong());
     }
 
     @Test
@@ -143,7 +144,7 @@ class ShipmentNotificationConsumerTest {
         assertThatThrownBy(() -> consumer.onMessage(record(shipmentDeliveredJson(UUID.randomUUID(), ORDER_ID)), EventType.SHIPMENT_DELIVERED))
                 .isInstanceOf(OrderServiceUnavailableException.class);
 
-        verify(notificationService, never()).processEvent(any(), any(), any(), any(), any());
+        verify(notificationService, never()).processEvent(any(), any(), any(), any(), any(), anyLong());
     }
 
     private String shipmentShippedJson(UUID eventId, Long orderId, String trackingNumber) {

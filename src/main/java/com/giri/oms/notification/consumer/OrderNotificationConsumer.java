@@ -93,7 +93,8 @@ public class OrderNotificationConsumer {
                 NotificationType.ORDER_CONFIRMED,
                 order.customerId(),
                 event.orderId(),
-                Map.of("orderId", event.orderId()));
+                Map.of("orderId", event.orderId()),
+                record.timestamp());
     }
 
     private void handleOrderCancelled(ConsumerRecord<String, String> record) {
@@ -112,7 +113,8 @@ public class OrderNotificationConsumer {
                 NotificationType.ORDER_CANCELLED,
                 order.customerId(),
                 event.orderId(),
-                Map.of("orderId", event.orderId()));
+                Map.of("orderId", event.orderId()),
+                record.timestamp());
     }
 
     /**
