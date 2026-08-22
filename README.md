@@ -7,12 +7,13 @@ every convention this system already established: same package layout,
 same JWT-verification-only security posture, same resilient-client pattern,
 same web/worker-role convention.
 
-**Current status: Phase 4 in progress — two channels (email, SMS), all
-eight event types wired** (`OrderConfirmed`, `OrderCancelled`,
-`PaymentConfirmed`, `PaymentFailed`, `CustomerWelcome`, `ShipmentShipped`,
-`ShipmentDelivered`, `ShipmentReturned` — the last three newly added).
-**Phase 3 is now fully complete.** See [Build phases](#build-phases) for
-the full staged plan and exactly what's implemented vs. planned.
+**Current status: Phase 4 fully complete on the code side — three
+channels wired (email, SMS, push), all eight event types on each.** Push
+is code-complete but disabled by default (`app.notification.push.enabled=false`)
+pending a `customer-service` schema change — see
+[Additional channels](#build-phases). **Phases 1–3 and the time-to-delivery
+metric (§10) are also fully complete.** See [Build phases](#build-phases)
+for the full staged plan and exactly what's implemented vs. planned.
 
 ## What it does
 
@@ -20,8 +21,9 @@ Listens to `oms-main`'s, `customer-service`'s, and `shipment-service`'s
 Kafka event streams and turns order lifecycle, account, and shipment
 events into customer notifications — order confirmations, cancellations,
 payment outcomes, account welcome emails, and shipment tracking/delivery/
-return notices, all on both email and SMS, with a push channel staged for
-a later phase. Every send is recorded
+return notices, on email and SMS today, with push built and staged behind
+a feature flag pending an upstream schema change (see below). Every send
+is recorded
 (`notifications` table) so delivery history is queryable, every event is
 processed idempotently (a Kafka redelivery must never double-send), and
 every customer has per-(type, channel) opt-in/opt-out state — real for both
@@ -146,9 +148,11 @@ Javadoc for the full ordering. Three things worth knowing about how this
 actually behaves:
 
 - **The customer lookup still happens once, not once per channel** —
-  `CustomerClientResponse` now carries `phone` alongside `email`, so a
-  single `CustomerClient` round-trip resolves the recipient address for
-  every channel this event will fan out to.
+  `CustomerClientResponse` now carries `phone` and `pushToken` alongside
+  `email`, so a single `CustomerClient` round-trip resolves the recipient
+  address for every channel this event will fan out to, including push
+  once `app.notification.push.enabled=true` registers `FcmPushProvider`
+  as a fourth candidate in the loop.
 - **A channel with no recipient address on file is skipped silently** — a
   log line, not a `FAILED` Notification row, since there was nothing to
   attempt (see `#recipientAddressFor`'s own Javadoc). This is a real
@@ -377,27 +381,46 @@ to the order that triggered it). Not built in Phase 1.
   never throws out of `send()`. See `SmsSender`'s own Javadoc for why this
   is a mocked-collaborator test and not a WireMock contract test — the
   paragraph immediately below explains what that leaves uncovered.
+- `FcmPushProviderTest` *(new)* — same mocked-collaborator shape as
+  `TwilioSmsProviderTest`, against the `PushSender` seam, with the same
+  real resilience4j registries. One genuine wrinkle
+  `TwilioSmsProviderTest` didn't have: `FirebaseMessagingException` has no
+  public constructor at all in firebase-admin `9.10.0` (confirmed against
+  its actual source), so every exception case here is
+  `Mockito.mock(FirebaseMessagingException.class)` with
+  `getMessagingErrorCode()` stubbed, not constructed for real. Covers all
+  4 permanent FCM error codes, one transient code, and a `null` error code
+  (raw connection failure, treated as transient) — this closes what §5's
+  own plan-status entry once called "genuinely untestable end to end,"
+  which turned out to be imprecise once someone actually tried: the
+  `PushSender` seam already existed specifically to make this testable.
+- `CustomerClientContractTest` / `OrderClientContractTest` — real WireMock,
+  real deserialization (happy path plus a malformed-JSON-body case);
+  `CustomerClientResilienceTest` / `OrderClientResilienceTest` — retry-then-
+  fail on a 500, no retry on a 404, circuit-breaker opens after repeated
+  failures. Same pattern `shipment-service`'s own
+  `OrderClientContractTest`/`OrderClientResilienceTest` establish.
 
-**Not yet built**: a WireMock-based contract test for `CustomerClient`/
-`OrderClient` (same pattern `shipment-service`'s `OrderClientContractTest`/
-`OrderClientResilienceTest` establish — retry/circuit-breaker behavior under
-real HTTP failures), and any test exercising `InternalServiceAuthInterceptor`
+**Not yet built**: any test exercising `InternalServiceAuthInterceptor`
 itself. **Also not yet built**: any test that verifies `TwilioSmsSender`'s
-actual HTTP call still matches Twilio's real API response shape —
-`TwilioSmsProviderTest` proves this service's own retry/classification
-logic is correct against a mock, but a genuine drift in Twilio's API (a
-renamed field, a changed status-code convention) wouldn't be caught by
+or `FcmPushSender`'s actual HTTP/SDK call still matches Twilio's or FCM's
+real API response shape — `TwilioSmsProviderTest`/`FcmPushProviderTest`
+prove this service's own retry/classification logic is correct against a
+mock, but a genuine drift in either provider's real API (a renamed field,
+a changed status-code or error-code convention) wouldn't be caught by
 anything in this repo today. twilio-java owns its HTTP client internally
-with no clean base-URL override, so pointing WireMock at it the way
+with no clean base-URL override (and the Firebase Admin SDK is no
+different), so pointing WireMock at either the way
 `OrderClientContractTest` points at a plain `RestClient` isn't
 straightforward — flagged here rather than silently assumed covered.
 
-**Not yet run**: neither the unsubscribe-token change (code, tests,
-`pom.xml`'s new jjwt dependency) nor the Phase 4 SMS/multi-channel change
-(new `twilio` dependency, `TwilioSmsProvider`, `SmsSender`, the
-`NotificationServiceImpl` fan-out rewrite, and every test touched above)
-has been compiled/run in this environment — no Maven Central access here.
-Run `./mvnw test` before trusting either fully.
+**Not yet run in this repo**: the push channel addition (`FcmPushProvider`,
+`PushSender`, `FcmConfig`, `FcmPushProviderTest`, the `pushToken` field, and
+every consumer/test change that came with it) hasn't been confirmed by a
+real `./mvnw test` run yet — unlike the unsubscribe-token and Phase 4 SMS
+work above, both of which have. Run it before trusting the push addition
+fully, same reasoning as always: no Maven Central access in the
+environment that authored it.
 
 ## Build phases
 
@@ -413,9 +436,13 @@ is a starting position, not a substitute for actual legal sign-off.
 **Phase 3 is now fully wired** —
 `OrderConfirmed`/`OrderCancelled`/`PaymentConfirmed`/`PaymentFailed`/
 `CustomerWelcome` are all done on the email channel; **shipment lifecycle
-events are now done too — Phase 3 is fully complete.** **Phase 4 is in
-progress** — SMS is done for all eight wired event types; push and the
-infra-parity checklist (Phase 5) are still ahead.
+events are now done too — Phase 3 is fully complete.** **Phase 4 is now
+fully complete on the code side** — SMS is done for all eight wired event
+types, and push (`FcmPushProvider`) is built for all eight too, gated
+behind `app.notification.push.enabled=false` pending a `customer-service`
+schema change (see item 4 below). **Phase 5 (infra parity) is also fully
+complete**, including the time-to-delivery Grafana panel — see item 5
+below.
 
 1. **Scaffold + one channel, one event type** *(this build)* — email only,
    `OrderConfirmed` only. Proves the skeleton (Kafka consumer, idempotency,
@@ -494,15 +521,29 @@ infra-parity checklist (Phase 5) are still ahead.
      above), SMS templates for all eight wired event types, and
      `NotificationServiceImpl`'s fan-out rewrite so a customer opted into
      both channels gets both, not just email.
-   - **Still open:** push. No provider, no template set, and no field on
-     `CustomerClientResponse`/`customer-service`'s `Customer` entity for a
-     push token yet — that last part is a cross-repo change, unlike SMS
-     which only needed the already-reserved `phone` field.
+   - **Done, but gated off:** push — `FcmPushProvider` (mirrors
+     `TwilioSmsProvider`'s resilience4j composition and never-throw
+     contract), a `<type>_push_en.txt` template for all eight event types
+     (the title reuses `NotificationComposerImpl#subjectFor`'s existing
+     subject line rather than adding a `NotificationRequest` field just for
+     push), and a `pushToken` field added to `CustomerClientResponse` ahead
+     of the schema it depends on. Disabled by default
+     (`app.notification.push.enabled=false`) because `customer-service`
+     doesn't expose a device push token yet — this is a genuine cross-repo
+     blocker, not missing code here. Flipping the flag plus real FCM
+     credentials is the entire remaining activation path once that field
+     ships. See `FcmPushProvider`'s own Javadoc for the full reasoning.
 5. **Infra parity** — Kubernetes manifests, Prometheus scrape target,
    Grafana dashboard, same checklist `shipment-service`'s own Stage 7
-   established. Not started.
+   established. **Done** — web/worker split, KEDA-driven worker autoscaling
+   on consumer lag + retry backlog, PDBs, PodMonitor, and a Grafana
+   dashboard with real notification-specific metrics (sent/failed/
+   dead-lettered by channel and type, retry-queue depth, provider send
+   latency, and time-to-delivery (event-received → notification-sent,
+   distinct from send latency — see `NotificationMetrics#recordTimeToDelivery`'s
+   own Javadoc) are all built. See `k8s/README.md`.
 
-## Known gaps (through Phase 3 completion / Phase 4 in progress)
+## Known gaps (through Phase 4 / Phase 5 completion)
 
 Collected in one place for visibility, even though each is also documented
 at its point of origin in code:
@@ -526,26 +567,31 @@ at its point of origin in code:
   genuinely enforced; order/payment/shipment types stay un-opt-out-able.
   This is the common industry-standard reading, applied here without
   actual legal review — get real sign-off before relying on it in a real
-  deployment. Applies identically across both channels.
+  deployment. Applies identically across all three channels.
 - **`resend` reconstructs template variables from stored columns only** —
   fine for most types, but genuinely under-populates `ShipmentShipped`
   (the stored row has no `trackingNumber` column — see
   [Data model](#data-model) — so a scheduler-driven or manual resend of a
   failed `ShipmentShipped` notification renders that field blank). See
   `NotificationService.resend`'s own Javadoc.
-- **No true HTTP-contract test for `TwilioSmsSender`** — `TwilioSmsProviderTest`
-  covers this service's own retry/classification logic against a mock;
-  nothing yet catches a real drift in Twilio's API shape. Evaluated and
-  deliberately not built — see [Testing](#testing) for the full reasoning.
 - **A customer opted into SMS with no phone number on file produces no
   visible failure signal** — silently skipped, not recorded as `FAILED`.
   See
   [Multi-channel fan-out](#multi-channel-fan-out-phase-4-and-what-changed-to-support-it)
   for the reasoning and why it's worth revisiting if it turns out to hide
-  a real data-quality problem.
-- **No push channel** — no provider, no template set, and no field on
-  `CustomerClientResponse`/`customer-service`'s `Customer` entity for a
-  push token. The last part is a cross-repo change SMS didn't need.
+  a real data-quality problem. Applies to push the same way, once enabled.
+- **Push is code-complete but disabled by default** —
+  `app.notification.push.enabled=false` because `customer-service` doesn't
+  expose a device push token yet; `CustomerClientResponse.pushToken()`
+  always deserializes to `null` until that ships. This is a genuine
+  cross-repo blocker, not missing code here — see `FcmPushProvider`'s own
+  Javadoc and [Additional channels](#build-phases) above for the full
+  activation path once the field exists.
+- **No true HTTP-contract test for `TwilioSmsSender`/`FcmPushSender`** —
+  `TwilioSmsProviderTest`/`FcmPushProviderTest` cover this service's own
+  retry/classification logic against a mock; nothing yet catches a real
+  drift in either provider's actual API shape. Evaluated and deliberately
+  not built — see [Testing](#testing) for the full reasoning.
 
 **Resolved since this list was last written** (kept here briefly so the
 history isn't lost, not as open items): contract/resilience tests for
@@ -555,11 +601,11 @@ history isn't lost, not as open items): contract/resilience tests for
 Prometheus scrape target, and a Grafana dashboard (Phase 5) are all now
 built (see `k8s/README.md`); all shipment lifecycle events are now wired
 (this closes Phase 3 entirely); `CUSTOMER_WELCOME` opt-out is now
-genuinely classified and enforced (this closes Phase 2 entirely).
-
-**Fixed this session:** the unsubscribe endpoint's signed-token gap — see
-[API](#api) and `security.UnsubscribeTokenService`.
-
-**Added this session:** the SMS channel end to end — `TwilioSmsProvider`,
-the `SmsSender` seam, SMS templates for all four wired event types, and
-`NotificationServiceImpl`'s multi-channel fan-out rewrite.
+genuinely classified and enforced (this closes Phase 2 entirely); the
+time-to-delivery metric and its Grafana panel are now built (closing the
+one gap §10 had left); the push channel (`FcmPushProvider`) is now built
+end to end, gated behind a feature flag pending `customer-service`'s
+schema change (this closes Phase 4 on the code side). Earlier still: the
+unsubscribe endpoint's signed-token fix (`security.UnsubscribeTokenService`)
+and the original SMS channel build (`TwilioSmsProvider`, the `SmsSender`
+seam, `NotificationServiceImpl`'s multi-channel fan-out rewrite).
